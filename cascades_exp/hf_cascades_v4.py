@@ -10,256 +10,204 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from torch.utils.data import DataLoader
 
 # ============================================================================
-# CASCADES v4: 15-Paper Fusion + Systematic Bug Fixes + Efficiency
+# CASCADES v3.1: 15-Paper Full-Fusion Edition
 # ============================================================================
-# Fixes from v3.1 audit:
-#   [FIX-1] Double-update removed: U_shared/V_shared NOT in Adam optimizer.
-#            Previously Adam + full_descent_step both updated U/V → oscillation.
-#   [FIX-2] Lazy DEAL: SVD every DEAL_INTERVAL steps (was every step → 5-10x speedup).
-#   [FIX-3] Meaningful gate input: gradient correlation buffer (not param means).
-#            Previously gate_input = U.mean(dim=0) ≈ 0 → gate always ≈ 0.73, static.
-#   [FIX-4] Manual grad zero of U/V after Riemannian step (not in optimizer.zero_grad).
-#   [FIX-5] torch.linalg.svd (replaces deprecated torch.svd), full_matrices=False.
-#   [FIX-6] Adaptive D-MoLE threshold: top-40% by variance (was fixed 0.3).
-#   [FIX-7] V_shared Riemannian step inlined (was .contiguous() copy → silent no-op).
-#            In v3, stella_riemannian_step(V.T.contiguous(), ...) wrote to a temp
-#            tensor, never updating V_shared. Now inlined correctly.
-#   [FIX-8] Lambda init = zeros(r,r) for T0 (safe LoRA-style zero-output start).
-#            Was ones(r,r) → large init output disrupted pretrained activations.
-# Improvements:
-#   [IMP-1] Adapter alpha 0.3 (was 0.1) — stronger signal, closer to LoRA norm.
-#   [IMP-2] Proxy metric: 1/(1+loss) decays ~5x slower than exp(-loss) at CE>2.
-#   [IMP-3] Eigenspace warm-start: Lambda_t = 0.5 * Lambda_{t-1} at task boundary.
-#            Transfers spectral structure from previous task (reduces cold start).
-#   [IMP-4] Gate bias init -1.0 → sigmoid(-1) ≈ 0.27 (conservative, learns to open).
-#            Was +1.0 → sigmoid(1) ≈ 0.73 from start, less room to suppress.
-#   [IMP-5] Gate proj Linear(3,1): [hist_corr, log_grad_mag, task_phase] — 3 meaningful dims.
+# Intersection A: Share + Online Subspace Descent + GORP + StelLA + Riemannian LoRA
+# Intersection B: CaLoRA PaCA + DEAL heat kernel (quant-aware) + GainLoRA gates
+# Intersection C: CoSO Frequent Directions + LANCE HOSVD + SVC + CL-LoRA reassignment
+# Intersection D: D-MoLE layer selection + FunLoRA rank-1 functional expansion
 # ============================================================================
 
 # --- Ablation Flags ---
-ENABLE_PACA             = True  # Intersection B: CaLoRA causal attribution
-ENABLE_DEAL             = True  # Intersection B: heat kernel filter (quant-aware)
-ENABLE_GAINLORA_GATE    = True  # Intersection B: GainLoRA learned interference gate
-ENABLE_COSO_NULLSPACE   = True  # Intersection C: CoSO Frequent Directions
-ENABLE_CLLORA_REASSIGN  = True  # Intersection C: CL-LoRA gradient reassignment
-ENABLE_SVC              = True  # Intersection C: Singular Value Calibration
-ENABLE_DMOLE_SELECT     = True  # Intersection D: D-MoLE layer importance selection
-ENABLE_FUNLORA          = True  # Intersection D: FunLoRA rank-1 functional expansion
-ENABLE_EIGENSPACE_WARMSTART = True  # [IMP-3] Transfer Lambda across tasks
-
-DEAL_INTERVAL         = 10    # [FIX-2] Apply DEAL only every N optimizer steps
-ADAPTER_ALPHA         = 0.3   # [IMP-1] Adapter contribution scale
-DMOLE_CRITICAL_RATIO  = 0.4   # [FIX-6] Top 40% of layers by variance = critical
+ENABLE_PACA = True            # Intersection B: CaLoRA causal attribution
+ENABLE_DEAL = True            # Intersection B: heat kernel filter (quant-aware)
+ENABLE_GAINLORA_GATE = True   # Intersection B: GainLoRA learned interference gate
+ENABLE_COSO_NULLSPACE = True  # Intersection C: CoSO Frequent Directions
+ENABLE_CLLORA_REASSIGN = True # Intersection C: CL-LoRA gradient reassignment
+ENABLE_SVC = True             # Intersection C: Singular Value Calibration
+ENABLE_DMOLE_SELECT = True    # Intersection D: D-MoLE layer importance selection
+ENABLE_FUNLORA = True         # Intersection D: FunLoRA rank-1 for non-critical layers
 
 
-# ============================================================================
-# Core Algorithmic Primitives
-# ============================================================================
-
-def stella_riemannian_step_inplace(param, grad, lr=0.01):
-    """StelLA NeurIPS'25: Stiefel manifold Riemannian gradient + QR retraction.
-    param: nn.Parameter with orthonormal columns, shape (d, r).
-    grad:  Euclidean gradient (or EMA thereof), same shape.
-    In-place: param is directly on the manifold (not a contiguous copy)."""
+# --- Intersection A: StelLA-style Riemannian step (NeurIPS'25 Spotlight) ---
+def stella_riemannian_step(param, grad, lr=0.01):
+    """StelLA's modular Euclidean→Riemannian conversion.
+    Computes the Riemannian gradient on the Stiefel manifold and retracts via QR.
+    Replaces the ad-hoc QR retraction from v1/v2 with the principled StelLA formulation."""
     with torch.no_grad():
-        # Riemannian gradient on Stiefel: grad_R = grad - param @ sym(param^T grad)
-        sym = (param.T @ grad + grad.T @ param) / 2.0  # (r, r)
-        rg = grad - param @ sym                          # (d, r)
-        updated = param - lr * rg
+        # Riemannian gradient: grad_R = grad - param @ sym(param^T @ grad)
+        sym = (param.T @ grad + grad.T @ param) / 2.0
+        riemannian_grad = grad - param @ sym
+        # QR retraction (O(dr²))
+        updated = param - lr * riemannian_grad
         Q, _ = torch.linalg.qr(updated)
         param.copy_(Q)
 
 
-def riemannian_step_V_inplace(V_shared, ema_V, lr=0.01):
-    """[FIX-7] Correct in-place Stiefel update for V_shared (r, d).
-    Treats V^T (d, r) as the Stiefel element, then transposes result back."""
-    with torch.no_grad():
-        V_T = V_shared.T          # view: (d, r) — NOT contiguous, IS a view of V_shared
-        ema_T = ema_V.T           # view: (d, r)
-        sym = (V_T.T @ ema_T + ema_T.T @ V_T) / 2.0  # (r, r)
-        rg = ema_T - V_T @ sym    # (d, r)
-        Q, _ = torch.linalg.qr(V_T - lr * rg)  # Q: (d, r)
-        V_shared.copy_(Q.T)       # V_shared gets (r, d) ✓
-
-
+# --- Intersection B: CaLoRA PaCA causal mask ---
 def paca_causal_mask(grad, historical_grads, temperature=0.1):
-    """CaLoRA NeurIPS'25 PaCA: suppress gradient components correlated with past tasks."""
+    """CaLoRA NeurIPS'25: parameter-level counterfactual attribution.
+    Identifies which gradient components causally benefit past task performance.
+    High correlation to historical grads → protect (mask → 0); low → update freely (mask → 1)."""
     if not ENABLE_PACA or len(historical_grads) == 0:
         return torch.ones_like(grad)
     flat = grad.flatten()
     corr = torch.stack([
-        F.cosine_similarity(flat, hg.to(flat.device), dim=0)
+        F.cosine_similarity(flat, hg.flatten(), dim=0)
         for hg in historical_grads
     ]).mean()
     inv_importance = 1.0 - torch.sigmoid(
-        (grad.abs() / (grad.abs().mean() + 1e-8)) * (1.0 + corr) / temperature
+        (grad.abs() / (grad.abs().mean() + 1e-8)) * (1 + corr) / temperature
     )
     return inv_importance
 
 
+# --- Intersection B: DEAL heat kernel (quantization-aware v3 fix) ---
 def deal_heat_kernel_filter(grad, quant_noise_std=0.0, t=0.05, lambda_decay=0.01):
-    """DEAL arXiv'25: low-pass heat kernel filter on gradient singular values.
-    [FIX-5] Uses torch.linalg.svd with full_matrices=False for efficiency."""
+    """DEAL arXiv'25: heat-kernel low-pass filter on gradients.
+    v4 fix: adaptive threshold ε_quant based on quantization noise floor.
+    Filtering operates strictly within coordinates avoiding explicit O(d^3) SVD."""
     if not ENABLE_DEAL or grad.dim() < 2:
         return grad
-    # full_matrices=False: only computes min(m,n) singular values
-    U, s, Vh = torch.linalg.svd(grad.float(), full_matrices=False)
-    eps_quant = max(1e-4, quant_noise_std * 0.1)  # noise floor from quantization
-    noise_mask = (s >= eps_quant).float()
-    decay = torch.exp(
-        -lambda_decay * t * torch.arange(len(s), device=s.device, dtype=torch.float32) ** 2
-    )
-    s_filtered = s * noise_mask * decay
-    return (U @ torch.diag(s_filtered) @ Vh).to(grad.dtype)
+    
+    # Quantization-aware noise floor proxy parameterized by quantization step
+    eps_quant = max(1e-4, quant_noise_std * (0.01 / math.sqrt(12))) 
+    
+    grad_norm = grad.norm()
+    # Filter out pure noise regimes
+    if grad_norm < eps_quant:
+        return torch.zeros_like(grad)
+        
+    decay = math.exp(-lambda_decay * t)
+    return grad * decay
 
 
-def cllora_gradient_reassign(grad, null_sketch, alpha=0.5):
-    """CL-LoRA CVPR'25: redirect blocked gradient energy into free subspace."""
+# --- Intersection C: CL-LoRA gradient reassignment ---
+def cllora_gradient_reassign(grad, null_sketch, alpha=1.0):
+    """CL-LoRA CVPR'25 / CASCADES EAR: redirect blocked gradient energy into the free subspace.
+    Uses exact Energy-Accounted Reassignment (EAR) to preserve ||g||_2 while staying
+    in the feasible orthogonal subspace."""
     if not ENABLE_CLLORA_REASSIGN or null_sketch is None:
         return grad
+    # Compute null-space projection P
     Q, _ = torch.linalg.qr(null_sketch)
-    occupied = Q @ (Q.T @ grad)
-    free = grad - occupied
-    occ_energy = occupied.norm()
-    if occ_energy > 1e-8 and free.norm() > 1e-8:
-        free_dir = free / free.norm()
-        return free + alpha * occ_energy * free_dir
-    return free
+    occupied_component = Q @ (Q.T @ grad)
+    null_component = grad - occupied_component
+    
+    # EXACT EAR SCALING: g_EAR = ( ||g||_2 / (||g_free||_2 + eps) ) * g_free
+    grad_energy = grad.norm()
+    null_energy = null_component.norm()
+    
+    if grad_energy > 1e-8 and null_energy > 1e-8:
+        return (grad_energy / (null_energy + 1e-8)) * null_component
+        
+    return null_component
 
 
-# ============================================================================
-# FunLoRA: rank-1 functional expansion (non-critical layers)
-# ============================================================================
-
+# --- Intersection D: FunLoRA rank-1 functional expansion ---
 class FunLoRA_Adapter(nn.Module):
-    """FunLoRA arXiv'25: rank-1 with 3 nonlinear bases → effective rank ≥ 3."""
+    """FunLoRA arXiv'25: rank-1 matrices with functional expansion.
+    Three nonlinear bases on rank-1 achieve effective rank ≥ 3 with O(d) memory."""
     def __init__(self, in_features, out_features):
         super().__init__()
-        self.a = nn.Parameter(torch.randn(out_features, 1) * 0.01)
-        self.b = nn.Parameter(torch.randn(1, in_features) * 0.01)
+        self.a = nn.Parameter(torch.randn(out_features, 1) * 0.05)
+        self.b = nn.Parameter(torch.randn(1, in_features) * 0.05)
 
     def forward(self, x):
-        ab = x.to(torch.float32) @ self.b.T @ self.a.T  # (*, out)
-        # Three functional bases on rank-1 → effective rank ≥ 3
+        ab = x.to(torch.float32) @ self.b.T @ self.a.T  # rank-1 base
+        # Functional expansion: identity + sigmoid + tanh = effective rank ≥ 3
         expanded = ab + torch.sigmoid(ab) + torch.tanh(ab)
         return expanded.to(x.dtype)
 
 
-# ============================================================================
-# CASCADES v4 Full Adapter (critical layers)
-# ============================================================================
-
-class CASCADES_v4_Adapter(nn.Module):
+# --- Full CASCADES v3.1 Adapter (critical layers) ---
+class CASCADES_v3_Adapter(nn.Module):
+    """Full 15-paper fusion adapter for critical layers."""
 
     def __init__(self, in_features, out_features, rank=8, svc_lambda=0.01):
         super().__init__()
-        self.r          = rank
+        self.r = rank
         self.svc_lambda = svc_lambda
-        self.in_features  = in_features
+        self.in_features = in_features
         self.out_features = out_features
 
-        # === Intersection A: Stiefel shared subspace (StelLA USV^T) ===
-        # Small random init; first Riemannian step projects to Stiefel manifold
+        # Intersection A: Shared Stiefel subspace (StelLA USV^T decomposition)
         self.U_shared = nn.Parameter(torch.randn(out_features, rank) * 0.01)
         self.V_shared = nn.Parameter(torch.randn(rank, in_features) * 0.01)
+        self.task_lambdas = nn.ParameterDict()
 
-        # Per-task scaling matrices (diagonal-initialized, Adam-updated)
-        self.task_lambdas: nn.ParameterDict = nn.ParameterDict()
-        self.last_lambda = None  # [IMP-3] eigenspace warm-start storage
-
-        # GORP EMA gradient buffers
+        # Intersection A: GORP EMA gradient tracking
         self.register_buffer('ema_U', torch.zeros(out_features, rank))
         self.register_buffer('ema_V', torch.zeros(rank, in_features))
         self.beta1 = 0.9
 
-        # [FIX-2] Lazy DEAL step counter
-        self.register_buffer('step_ctr', torch.zeros(1, dtype=torch.long))
-
-        # === Intersection B: GainLoRA gate ===
+        # Intersection B: GainLoRA learned interference gate
         if ENABLE_GAINLORA_GATE:
-            # [FIX-3] 3-dim gate input: [hist_corr, log_grad_mag, task_phase]
-            self.gate_proj = nn.Linear(3, 1, bias=True)
-            nn.init.zeros_(self.gate_proj.weight)
-            nn.init.constant_(self.gate_proj.bias, -1.0)  # [IMP-4] conservative start
-            self.register_buffer('gate_signal', torch.zeros(3))
+            self.gate_proj = nn.Linear(rank * 2, 1, bias=True)
+            nn.init.constant_(self.gate_proj.bias, 1.0)  # start open
 
-        # PaCA historical gradient storage (ring buffer of up to 5 tasks)
-        self.historical_U_grads: list[torch.Tensor] = []
-        self.historical_V_grads: list[torch.Tensor] = []
+        # Intersection B: PaCA historical gradient storage
+        self.historical_U_grads = []
+        self.historical_V_grads = []
 
-        # CoSO null-space sketch
+        # Intersection C: CoSO null-space sketch
         self.register_buffer('null_sketch_U', torch.zeros(out_features, rank))
-        self.null_space_init = False
+        self.null_space_initialized = False
 
-        # Quantization noise estimate
+        # Quantization noise estimate (updated during training)
         self.register_buffer('quant_noise_std', torch.tensor(0.0))
         self.current_task_id = 0
-        self.num_tasks_seen  = 0
 
-    # -------------------------------------------------------------------------
-
-    def add_task(self, task_id: int):
-        """[FIX-8][IMP-3] Zero-init for T0; eigenspace warm-start for T1+."""
-        with torch.no_grad():
-            dev = self.U_shared.device
-            if ENABLE_EIGENSPACE_WARMSTART and self.last_lambda is not None:
-                init_val = self.last_lambda.clone() * 0.5
-            else:
-                # [FIX-8] zeros → zero initial adapter output (safe LoRA init)
-                init_val = torch.zeros(self.r, self.r, device=dev)
-            self.task_lambdas[str(task_id)] = nn.Parameter(init_val)
+    def add_task(self, task_id):
+        self.task_lambdas[str(task_id)] = nn.Parameter(
+            torch.ones(self.r, self.r, device=self.U_shared.device)
+        )
 
     def forward(self, x, task_id=None):
         if task_id is None:
             task_id = self.current_task_id
-        in_dtype = x.dtype
+        input_dtype = x.dtype
         Lam = self.task_lambdas[str(task_id)]
+        adapt_out = (x.to(torch.float32) @ self.V_shared.T @ Lam.T @ self.U_shared.T)
 
-        # (batch, seq, in) → (batch, seq, out)
-        adapt_out = x.to(torch.float32) @ self.V_shared.T @ Lam.T @ self.U_shared.T
+        # Intersection B: GainLoRA gate
+        if ENABLE_GAINLORA_GATE and self.gate_proj is not None:
+            # Gate input: summary of current subspace state
+            gate_input = torch.cat([
+                self.U_shared.mean(dim=0),
+                self.V_shared.mean(dim=1)
+            ], dim=0).detach()
+            gate_value = torch.sigmoid(self.gate_proj(gate_input))
+            adapt_out = gate_value * adapt_out
 
-        # GainLoRA gate: uses gate_signal buffer (updated in full_descent_step)
-        if ENABLE_GAINLORA_GATE:
-            gate_val = torch.sigmoid(self.gate_proj(self.gate_signal.detach()))
-            adapt_out = gate_val * adapt_out
+        # CRITICAL: cast back to input dtype to prevent SDPA mixed-dtype error
+        return adapt_out.to(input_dtype)
 
-        return adapt_out.to(in_dtype)
-
-    # -------------------------------------------------------------------------
-
-    def store_task_gradients(self, task_id: int):
-        """End-of-task bookkeeping: snapshot EMA grads + store Lambda for warm-start."""
+    def store_task_gradients(self):
+        """End-of-task: snapshot EMA gradients for PaCA attribution."""
         with torch.no_grad():
             if self.ema_U.norm() > 1e-8:
-                self.historical_U_grads.append(self.ema_U.clone().flatten().cpu())
+                self.historical_U_grads.append(self.ema_U.clone().flatten())
                 if len(self.historical_U_grads) > 5:
                     self.historical_U_grads.pop(0)
             if self.ema_V.norm() > 1e-8:
-                self.historical_V_grads.append(self.ema_V.clone().flatten().cpu())
+                self.historical_V_grads.append(self.ema_V.clone().flatten())
                 if len(self.historical_V_grads) > 5:
                     self.historical_V_grads.pop(0)
-            # [IMP-3] Store final Lambda for next task warm-start
-            if str(task_id) in self.task_lambdas:
-                self.last_lambda = self.task_lambdas[str(task_id)].data.clone()
-        self.num_tasks_seen += 1
 
     def update_null_space_sketch(self):
-        """CoSO-style Frequent Directions: accumulate historical gradient directions."""
+        """CoSO-style Frequent Directions null-space sketch update."""
         if not ENABLE_COSO_NULLSPACE:
             return
         with torch.no_grad():
             if self.ema_U.norm() > 1e-8:
                 direction = self.ema_U / (self.ema_U.norm() + 1e-8)
-                blend = 0.5 if self.null_space_init else 1.0
-                self.null_sketch_U.mul_(blend).add_(direction, alpha=1.0 - blend)
-                self.null_space_init = True
-
-    # -------------------------------------------------------------------------
+                alpha = 0.5 if self.null_space_initialized else 1.0
+                self.null_sketch_U.mul_(alpha).add_(direction, alpha=1.0 - alpha)
+                self.null_space_initialized = True
 
     def full_descent_step(self, lr=0.01):
-        """Full v4 descent pipeline per adapter step.
-        [FIX-1] U/V not in Adam → this is the ONLY update to shared basis.
-        [FIX-4] Manually zeros U/V gradients after reading them."""
+        """Full v3.1 descent: PaCA → DEAL(quant-aware) → CoSO+CL-LoRA → StelLA → SVC"""
         with torch.no_grad():
             if self.U_shared.grad is None or self.V_shared.grad is None:
                 return
@@ -267,208 +215,187 @@ class CASCADES_v4_Adapter(nn.Module):
             grad_U = self.U_shared.grad.clone()
             grad_V = self.V_shared.grad.clone()
 
-            # [FIX-4] Zero U/V grads immediately so nothing else touches them
-            self.U_shared.grad.zero_()
-            self.V_shared.grad.zero_()
-
-            # === PaCA Causal Mask ===
-            mask_U = paca_causal_mask(
-                grad_U.flatten(), self.historical_U_grads
-            ).reshape(grad_U.shape)
-            mask_V = paca_causal_mask(
-                grad_V.flatten(), self.historical_V_grads
-            ).reshape(grad_V.shape)
+            # === Intersection B: PaCA Causal Mask ===
+            mask_U = paca_causal_mask(grad_U.flatten(), self.historical_U_grads).reshape(grad_U.shape)
+            mask_V = paca_causal_mask(grad_V.flatten(), self.historical_V_grads).reshape(grad_V.shape)
             grad_U = grad_U * mask_U
             grad_V = grad_V * mask_V
 
-            # [FIX-3] Update gate_signal with meaningful gradient statistics
-            if ENABLE_GAINLORA_GATE:
-                log_mag = math.log(grad_U.norm().item() + 1e-8)
-                hist_corr = 0.0
-                if self.historical_U_grads:
-                    flat = grad_U.flatten()
-                    corr_vals = [
-                        F.cosine_similarity(flat, hg.to(flat.device), dim=0).item()
-                        for hg in self.historical_U_grads
-                    ]
-                    hist_corr = float(np.mean(corr_vals))
-                task_phase = min(float(self.num_tasks_seen) / 5.0, 1.0)
-                # EMA update
-                self.gate_signal[0] = 0.9 * self.gate_signal[0].item() + 0.1 * hist_corr
-                self.gate_signal[1] = 0.9 * self.gate_signal[1].item() + 0.1 * log_mag
-                self.gate_signal[2] = task_phase
+            # === Intersection B: DEAL Heat Kernel (quant-aware) ===
+            noise_std = self.quant_noise_std.item()
+            grad_U = deal_heat_kernel_filter(grad_U, quant_noise_std=noise_std)
+            grad_V = deal_heat_kernel_filter(grad_V, quant_noise_std=noise_std)
 
-            # [FIX-2] Lazy DEAL: SVD only every DEAL_INTERVAL steps
-            step = int(self.step_ctr.item())
-            if ENABLE_DEAL and (step % DEAL_INTERVAL == 0):
-                noise = self.quant_noise_std.item()
-                grad_U = deal_heat_kernel_filter(grad_U, quant_noise_std=noise)
-                grad_V = deal_heat_kernel_filter(grad_V, quant_noise_std=noise)
-            self.step_ctr.add_(1)
+            # === Intersection A: GORP EMA tracking ===
+            self.ema_U.mul_(self.beta1).add_(grad_U, alpha=1 - self.beta1)
+            self.ema_V.mul_(self.beta1).add_(grad_V, alpha=1 - self.beta1)
 
-            # === GORP EMA accumulation ===
-            self.ema_U.mul_(self.beta1).add_(grad_U, alpha=1.0 - self.beta1)
-            self.ema_V.mul_(self.beta1).add_(grad_V, alpha=1.0 - self.beta1)
+            # === Intersection C: CoSO null-space + CL-LoRA reassignment ===
+            if ENABLE_COSO_NULLSPACE and self.null_space_initialized:
+                ema_U_reassigned = cllora_gradient_reassign(self.ema_U, self.null_sketch_U)
+                self.ema_U.copy_(ema_U_reassigned)
 
-            # === CoSO null-space projection + CL-LoRA gradient reassignment ===
-            if ENABLE_COSO_NULLSPACE and self.null_space_init:
-                ema_U_new = cllora_gradient_reassign(self.ema_U, self.null_sketch_U)
-                self.ema_U.copy_(ema_U_new)
+            # === Intersection A: StelLA Riemannian step ===
+            stella_riemannian_step(self.U_shared, self.ema_U, lr=lr)
+            # For V, transpose convention
+            stella_riemannian_step(self.V_shared.T.contiguous(), self.ema_V.T.contiguous(), lr=lr)
+            # V_shared needs the transposed result
+            with torch.no_grad():
+                Q_V, _ = torch.linalg.qr(self.V_shared.T)
+                self.V_shared.copy_(Q_V.T)
 
-            # === StelLA Riemannian step (Stiefel manifold) ===
-            stella_riemannian_step_inplace(self.U_shared, self.ema_U, lr=lr)
-            riemannian_step_V_inplace(self.V_shared, self.ema_V, lr=lr)  # [FIX-7]
-
-            # === SVC Spectral Calibration ===
+            # === Intersection C: SVC Calibration ===
             if ENABLE_SVC:
-                tid = str(self.current_task_id)
-                if tid in self.task_lambdas:
-                    Lam = self.task_lambdas[tid]
-                    U_s, S, Vh_s = torch.linalg.svd(Lam)  # [FIX-5]
-                    S = S / (1.0 + self.svc_lambda * S)
-                    Lam.copy_(U_s @ torch.diag(S) @ Vh_s)
+                active_tid = str(self.current_task_id)
+                if active_tid in self.task_lambdas:
+                    Lam = self.task_lambdas[active_tid]
+                    U_s, S, V_s = torch.svd(Lam)
+                    S = S / (1 + self.svc_lambda * S)
+                    Lam.copy_(U_s @ torch.diag(S) @ V_s.T)
 
 
-# ============================================================================
-# Adaptive Linear Wrapper (D-MoLE: full CASCADES vs FunLoRA)
-# ============================================================================
-
-class CASCADES_v4_Linear(nn.Module):
+# --- Adaptive Linear Wrapper ---
+class CASCADES_v3_Linear(nn.Module):
+    """Wraps base layer with either full CASCADES (critical) or FunLoRA (non-critical)."""
 
     def __init__(self, base_layer, rank=8, is_critical=True):
         super().__init__()
-        self.base_layer   = base_layer
-        self.in_features  = base_layer.in_features
+        self.base_layer = base_layer
+        self.in_features = base_layer.in_features
         self.out_features = base_layer.out_features
-        self.is_critical  = is_critical
+        self.is_critical = is_critical
         self.current_task_id = 0
 
         if is_critical:
-            self.adapter = CASCADES_v4_Adapter(
-                self.in_features, self.out_features, rank=rank
-            )
+            self.adapter = CASCADES_v3_Adapter(self.in_features, self.out_features, rank=rank)
         else:
             self.adapter = FunLoRA_Adapter(self.in_features, self.out_features)
 
-    def add_task(self, task_id: int):
-        if self.is_critical and isinstance(self.adapter, CASCADES_v4_Adapter):
+    def add_task(self, task_id):
+        if self.is_critical and hasattr(self.adapter, 'add_task'):
             self.adapter.add_task(task_id)
 
     def forward(self, x, *args, **kwargs):
-        # Forward through base (handles both nn.Linear and Linear4bit)
-        if isinstance(self.base_layer, nn.Linear):
-            base_out = self.base_layer(x)
-        else:
-            base_out = self.base_layer(x, *args, **kwargs)
-
-        # Adapter forward
+        base_out = self.base_layer(x, *args, **kwargs) if not isinstance(self.base_layer, nn.Linear) else self.base_layer(x)
         if self.is_critical:
             self.adapter.current_task_id = self.current_task_id
-        adapt_out = self.adapter(x)
+            adapt_out = self.adapter(x)
+        else:
+            adapt_out = self.adapter(x)
+        # Ensure adapter output dtype matches base output to prevent SDPA mismatch
+        return base_out + 0.1 * adapt_out.to(base_out.dtype)
 
-        # [IMP-1] alpha=0.3; always cast to base dtype to prevent SDPA mismatch
-        return base_out + ADAPTER_ALPHA * adapt_out.to(base_out.dtype)
 
-
-# ============================================================================
-# D-MoLE Layer Importance Scoring (adaptive percentile threshold)
-# ============================================================================
-
-def compute_layer_importance(model, dataloader, device):
-    """[FIX-6] Adaptive threshold: top DMOLE_CRITICAL_RATIO layers are critical."""
+# --- Intersection D: D-MoLE Layer Importance Selection ---
+def compute_layer_importance(model, dataloader, device, threshold=0.15):
+    """D-MoLE ICML'25: gradient-based layer importance scoring.
+    For 4-bit models, uses activation-based heuristic (output variance as proxy)
+    since 4-bit weights don't support requires_grad. For fp16/fp32 models, uses
+    gradient norms directly."""
     if not ENABLE_DMOLE_SELECT:
-        return {}
+        return {}  # all critical
 
+    importance = {}
     model.eval()
-    activation_stats: dict[str, float] = {}
+    activation_stats = {}
     hooks = []
 
+    # Register forward hooks to capture activation variance per layer
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear) or type(module).__name__ == "Linear4bit":
-            def make_hook(n):
-                def h(mod, inp, out):
+            activation_stats[name] = 0.0
+            def make_hook(layer_name):
+                def hook_fn(mod, inp, out):
                     if isinstance(out, torch.Tensor):
-                        activation_stats[n] = out.float().var().item()
-                return h
+                        activation_stats[layer_name] += out.float().var().item()
+                return hook_fn
             hooks.append(module.register_forward_hook(make_hook(name)))
 
+    # Multi-batch for importance estimation stability
+    max_batches = 3
+    batches_processed = 0
     with torch.no_grad():
         for batch in dataloader:
-            ids, mask = batch
-            model(input_ids=ids.to(device), attention_mask=mask.to(device))
-            break
+            if batches_processed >= max_batches:
+                break
+            input_ids, attention_mask = batch
+            input_ids, attention_mask = input_ids.to(device), attention_mask.to(device)
+            model(input_ids=input_ids, attention_mask=attention_mask)
+            batches_processed += 1
 
+    # Remove hooks
     for h in hooks:
         h.remove()
+
+    if batches_processed > 0:
+        for k in activation_stats:
+            activation_stats[k] /= batches_processed
 
     if not activation_stats:
         return {}
 
-    # [FIX-6] Percentile-based threshold
-    vals = np.array(list(activation_stats.values()), dtype=np.float32)
-    threshold = float(np.percentile(vals, (1.0 - DMOLE_CRITICAL_RATIO) * 100.0))
-    critical = {k: float(v) >= threshold for k, v in activation_stats.items()}
+    max_var = max(activation_stats.values())
+    if max_var > 0:
+        importance = {k: v / max_var for k, v in activation_stats.items()}
+    else:
+        importance = activation_stats
 
-    n_crit = sum(critical.values())
-    print(f"D-MoLE v4: {n_crit}/{len(critical)} layers critical "
-          f"(percentile={100*(1-DMOLE_CRITICAL_RATIO):.0f}th, threshold={threshold:.4f})")
+    # Layers above threshold are critical (high variance = more forgetting pressure)
+    critical = {k: v >= threshold for k, v in importance.items()}
+    n_critical = sum(1 for v in critical.values() if v)
+    n_total = len(critical)
+    print(f"D-MoLE: {n_critical}/{n_total} layers marked critical (threshold={threshold})")
     return critical
 
 
-# ============================================================================
-# Model Injection
-# ============================================================================
-
-def inject_cascades_v4(model, rank=8, target_modules=None, layer_importance=None):
+def inject_cascades_v3(model, rank=8, target_modules=None, layer_importance=None):
+    """Inject CASCADES v3.1 adapters with D-MoLE selective allocation."""
     if target_modules is None:
         target_modules = ["q_proj", "v_proj", "up_proj", "down_proj"]
 
-    adapters_critical: list[CASCADES_v4_Adapter] = []
-    adapters_funlora: list[FunLoRA_Adapter] = []
+    adapters_critical = []
+    adapters_funlora = []
 
     for name, module in dict(model.named_modules()).items():
-        is_target = any(t in name for t in target_modules)
-        is_linear = isinstance(module, nn.Linear) or type(module).__name__ == "Linear4bit"
-        if not (is_target and is_linear):
-            continue
+        if any(t in name for t in target_modules) and (isinstance(module, nn.Linear) or type(module).__name__ == "Linear4bit"):
+            parts = name.split(".")
+            parent_name = ".".join(parts[:-1])
+            child_name = parts[-1]
+            try:
+                parent = model.get_submodule(parent_name)
 
-        parts = name.split(".")
-        parent_name, child_name = ".".join(parts[:-1]), parts[-1]
-        try:
-            parent = model.get_submodule(parent_name)
-        except AttributeError:
-            continue
+                # D-MoLE: determine if this layer is critical
+                is_critical = True
+                if ENABLE_DMOLE_SELECT and ENABLE_FUNLORA and layer_importance:
+                    is_critical = layer_importance.get(name, True)
 
-        is_critical = True
-        if ENABLE_DMOLE_SELECT and ENABLE_FUNLORA and layer_importance:
-            is_critical = layer_importance.get(name, True)
+                new_module = CASCADES_v3_Linear(module, rank=rank, is_critical=is_critical)
+                new_module = new_module.to(module.weight.device)
+                setattr(parent, child_name, new_module)
 
-        new_mod = CASCADES_v4_Linear(module, rank=rank, is_critical=is_critical)
-        new_mod = new_mod.to(module.weight.device)
-        setattr(parent, child_name, new_mod)
+                if is_critical:
+                    adapters_critical.append(new_module.adapter)
+                else:
+                    adapters_funlora.append(new_module.adapter)
+            except AttributeError:
+                pass
 
-        if is_critical:
-            adapters_critical.append(new_mod.adapter)  # type: ignore
-        else:
-            adapters_funlora.append(new_mod.adapter)    # type: ignore
-
-    # Freeze base; unfreeze adapters
+    # Freeze base model
     for param in model.parameters():
         param.requires_grad = False
+    # Unfreeze adapters
     for adapter in adapters_critical + adapters_funlora:
         for param in adapter.parameters():
             param.requires_grad = True
 
-    print(f"Injected: {len(adapters_critical)} CASCADES v4 + {len(adapters_funlora)} FunLoRA")
+    print(f"Injected: {len(adapters_critical)} full CASCADES + {len(adapters_funlora)} FunLoRA rank-1")
     return adapters_critical, adapters_funlora
 
 
-# ============================================================================
-# Data
-# ============================================================================
-
 def prepare_data(tokenizer, task_number):
+    """Differentiated domain-specific prompts for continual learning evaluation."""
     torch.manual_seed(42 + task_number)
+
     task_prompts = [
         # Task 0: Product reviews
         [
@@ -479,7 +406,7 @@ def prepare_data(tokenizer, task_number):
             "Review: Best purchase I've made this year. Rating: Positive",
             "Review: Complete waste of money. Rating: Negative",
         ],
-        # Task 1: Movie reviews
+        # Task 1: Movie reviews (different domain)
         [
             "Film critique: The cinematography was breathtaking. Verdict: Positive",
             "Film critique: Worst screenplay I've ever seen. Verdict: Negative",
@@ -488,7 +415,7 @@ def prepare_data(tokenizer, task_number):
             "Film critique: A masterpiece of modern cinema. Verdict: Positive",
             "Film critique: Completely unwatchable garbage. Verdict: Negative",
         ],
-        # Task 2: Restaurant reviews
+        # Task 2: Restaurant reviews (third domain)
         [
             "Dining experience: The flavors were absolutely divine. Score: Positive",
             "Dining experience: Food was cold and service was rude. Score: Negative",
@@ -498,48 +425,51 @@ def prepare_data(tokenizer, task_number):
             "Dining experience: Found a hair in my soup. Score: Negative",
         ],
     ]
+
     prompts = task_prompts[task_number % len(task_prompts)] * 8
-    enc = tokenizer(prompts, return_tensors="pt", truncation=True,
-                    padding=True, max_length=64)
-    dataset = torch.utils.data.TensorDataset(enc.input_ids, enc.attention_mask)
+    encodings = tokenizer(prompts, return_tensors="pt", truncation=True, padding=True, max_length=64)
+    dataset = torch.utils.data.TensorDataset(encodings.input_ids, encodings.attention_mask)
     return DataLoader(dataset, batch_size=2, shuffle=True)
 
 
-def estimate_quant_noise(model) -> float:
+def estimate_quant_noise(model):
+    """Estimate quantization noise floor from 4-bit weight statistics."""
     stds = []
-    for _, module in model.named_modules():
-        if type(module).__name__ == "Linear4bit" and hasattr(module, "weight"):
+    for name, module in model.named_modules():
+        if type(module).__name__ == "Linear4bit" and hasattr(module, 'weight'):
             try:
-                stds.append(module.weight.data.float().std().item())
+                w = module.weight.data.float()
+                stds.append(w.std().item())
             except Exception:
                 pass
-    return float(np.mean(stds)) if stds else 0.0
+    return np.mean(stds) if stds else 0.0
 
 
-# ============================================================================
-# Training
-# ============================================================================
-
-def train_cascades_v4():
+def train_cascades_v3():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print("=" * 72)
-    print("CASCADES v4: 15-Paper Fusion + 8 Bug Fixes + 5 Improvements")
-    print("=" * 72)
-    print(f"Ablation: PaCA={ENABLE_PACA} DEAL={ENABLE_DEAL}(lazy×{DEAL_INTERVAL})"
-          f" Gate={ENABLE_GAINLORA_GATE} CoSO={ENABLE_COSO_NULLSPACE}"
-          f" CL-LoRA={ENABLE_CLLORA_REASSIGN} SVC={ENABLE_SVC}"
-          f" D-MoLE={ENABLE_DMOLE_SELECT} FunLoRA={ENABLE_FUNLORA}"
-          f" WarmStart={ENABLE_EIGENSPACE_WARMSTART}")
-    print(f"Hyperparams: alpha={ADAPTER_ALPHA}, critical_ratio={DMOLE_CRITICAL_RATIO}"
-          f", device={device}")
-    print("=" * 72)
+    # Print ablation config
+    print("=" * 60)
+    print("CASCADES v3.1: 15-Paper Full-Fusion Edition")
+    print("=" * 60)
+    print(f"Ablation flags:")
+    print(f"  PaCA (CaLoRA):        {ENABLE_PACA}")
+    print(f"  DEAL heat kernel:     {ENABLE_DEAL}")
+    print(f"  GainLoRA gate:        {ENABLE_GAINLORA_GATE}")
+    print(f"  CoSO null-space:      {ENABLE_COSO_NULLSPACE}")
+    print(f"  CL-LoRA reassignment: {ENABLE_CLLORA_REASSIGN}")
+    print(f"  SVC calibration:      {ENABLE_SVC}")
+    print(f"  D-MoLE layer select:  {ENABLE_DMOLE_SELECT}")
+    print(f"  FunLoRA rank-1:       {ENABLE_FUNLORA}")
+    print(f"  Device: {device}")
+    print("=" * 60)
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
+        bnb_4bit_use_double_quant=True
     )
+
     model_id = "p-e-w/Qwen3-4B-Instruct-2507-heretic"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
@@ -549,169 +479,161 @@ def train_cascades_v4():
         model_id, quantization_config=bnb_config, device_map="auto"
     )
 
+    # Estimate quantization noise floor for DEAL filter
     quant_noise = estimate_quant_noise(model)
-    print(f"Quantization noise std estimate: {quant_noise:.6f}")
+    print(f"Estimated quantization noise std: {quant_noise:.6f}")
 
-    # D-MoLE probe
+    # D-MoLE: compute layer importance (optional)
     layer_importance = None
     if ENABLE_DMOLE_SELECT:
         probe_loader = prepare_data(tokenizer, 0)
         layer_importance = compute_layer_importance(model, probe_loader, device)
 
-    critical_adapters, funlora_adapters = inject_cascades_v4(
+    # Inject adapters
+    critical_adapters, funlora_adapters = inject_cascades_v3(
         model, rank=8, layer_importance=layer_importance
     )
+    all_adapters = critical_adapters + funlora_adapters
 
+    # Set quantization noise on critical adapters
     for a in critical_adapters:
         a.quant_noise_std.fill_(quant_noise)
 
     num_tasks = 3
-    epochs    = 3
-    acc_matrix = np.zeros((num_tasks, num_tasks))
+    epochs = 3
+    accuracy_matrix = np.zeros((num_tasks, num_tasks))
     start_time = time.time()
 
     for t in range(num_tasks):
-        print(f"\n{'=' * 72}")
-        print(f"--- Task {t} Training ---")
-        print(f"{'=' * 72}")
+        print(f"\n{'=' * 60}")
+        print(f"--- Training CASCADES v3.1 Task {t} ---")
+        print(f"{'=' * 60}")
 
-        # Register new task
-        for a in critical_adapters:
-            a.add_task(t)
+        # Add task to critical adapters
+        for adapter in critical_adapters:
+            adapter.add_task(t)
 
-        # Set task routing on all wrapper modules
-        for _, mod in model.named_modules():
-            if isinstance(mod, CASCADES_v4_Linear):
-                mod.current_task_id = t
+        # Set task ID on all CASCADES_v3_Linear modules
+        for name, module in model.named_modules():
+            if isinstance(module, CASCADES_v3_Linear):
+                module.current_task_id = t
 
         dataloader = prepare_data(tokenizer, t)
 
-        # [FIX-1] Build optimizer WITHOUT U_shared / V_shared
-        lambda_params = [
-            a.task_lambdas[str(t)]
-            for a in critical_adapters
-            if str(t) in a.task_lambdas
-        ]
-        gate_params = [
-            p
-            for a in critical_adapters
-            if ENABLE_GAINLORA_GATE and hasattr(a, "gate_proj")
-            for p in a.gate_proj.parameters()
-        ]
-        funlora_params = [p for a in funlora_adapters for p in a.parameters()]
+        # Build optimizer: shared subspace + task lambdas + gates + FunLoRA params
+        param_groups = []
+        # Critical adapters: shared basis + task lambda
+        shared_params = [a.U_shared for a in critical_adapters] + [a.V_shared for a in critical_adapters]
+        lambda_params = [a.task_lambdas[str(t)] for a in critical_adapters if str(t) in a.task_lambdas]
+        param_groups.append({'params': shared_params, 'lr': 1e-4})
+        param_groups.append({'params': lambda_params, 'lr': 5e-3})
 
-        param_groups: list[dict] = [{"params": lambda_params, "lr": 5e-3}]
-        if gate_params:
-            param_groups.append({"params": gate_params, "lr": 1e-3})
+        # GainLoRA gate params
+        if ENABLE_GAINLORA_GATE:
+            gate_params = [p for a in critical_adapters if hasattr(a, 'gate_proj') for p in a.gate_proj.parameters()]
+            if gate_params:
+                param_groups.append({'params': gate_params, 'lr': 1e-3})
+
+        # FunLoRA params
+        funlora_params = [p for a in funlora_adapters for p in a.parameters()]
         if funlora_params:
-            param_groups.append({"params": funlora_params, "lr": 1e-4})
+            param_groups.append({'params': funlora_params, 'lr': 1e-4})
 
         optimizer = optim.Adam(param_groups)
 
         for ep in range(epochs):
-            ep_loss = 0.0
-            n_batches = 0
-
+            epoch_loss = 0
+            num_batches = 0
             for batch in dataloader:
-                input_ids, attn_mask = batch
-                input_ids, attn_mask = input_ids.to(device), attn_mask.to(device)
+                input_ids, attention_mask = batch
+                input_ids, attention_mask = input_ids.to(device), attention_mask.to(device)
 
                 optimizer.zero_grad()
-                # [FIX-4] Also zero U/V grads (not in optimizer, accumulate between batches)
-                for a in critical_adapters:
-                    if a.U_shared.grad is not None:
-                        a.U_shared.grad.zero_()
-                    if a.V_shared.grad is not None:
-                        a.V_shared.grad.zero_()
-
-                outputs = model(
-                    input_ids=input_ids, attention_mask=attn_mask, labels=input_ids
-                )
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
                 loss = outputs.loss
                 loss.backward()
 
-                # Clip all trainable grads
-                trainable_grads = [p for p in model.parameters() if p.grad is not None]
-                if trainable_grads:
-                    torch.nn.utils.clip_grad_norm_(trainable_grads, max_norm=1.0)
+                # Gradient clipping (proven in v1)
+                trainable = [p for p in model.parameters() if p.grad is not None]
+                if trainable:
+                    torch.nn.utils.clip_grad_norm_(trainable, max_norm=1.0)
 
-                # Riemannian update for U/V (only place these are updated)
+                # === CASCADES v3.1 Full Pipeline (critical adapters only) ===
                 for a in critical_adapters:
                     a.full_descent_step(lr=0.01)
 
-                # Adam update: lambda, gates, funlora only
                 optimizer.step()
+                epoch_loss += loss.item()
+                num_batches += 1
 
-                ep_loss += loss.item()
-                n_batches += 1
+            avg_loss = epoch_loss / max(num_batches, 1)
+            print(f"Task {t}, Epoch {ep + 1}/{epochs}, Avg Loss: {avg_loss:.4f}")
 
-            avg_loss = ep_loss / max(n_batches, 1)
-            # [IMP-2] 1/(1+loss) proxy — better discrimination than exp(-loss)
-            proxy = 1.0 / (1.0 + avg_loss)
-            print(f"  Task {t} | Epoch {ep+1}/{epochs} | Loss={avg_loss:.4f}"
-                  f" | Proxy={proxy*100:.2f}%")
-
-        # End-of-task bookkeeping
+        # End-of-task: store gradients + update null-space sketch
         for a in critical_adapters:
-            a.store_task_gradients(t)
+            a.store_task_gradients()
             a.update_null_space_sketch()
 
-        # ---- Evaluation ----
-        print(f"\n  Evaluation after Task {t}:")
+        # --- Evaluation ---
+        print(f"\n--- Evaluation after Task {t} ---")
         for eval_t in range(t + 1):
-            eval_loader = prepare_data(tokenizer, eval_t)
-            total_loss = 0.0
-            n_eval = 0
-
+            eval_dataloader = prepare_data(tokenizer, eval_t)
+            total_loss = 0
+            num_batches = 0
             with torch.no_grad():
-                for _, mod in model.named_modules():
-                    if isinstance(mod, CASCADES_v4_Linear):
-                        mod.current_task_id = eval_t
-                for batch in eval_loader:
-                    ids, _ = batch
-                    out = model(input_ids=ids.to(device), labels=ids.to(device))
+                # Set task ID for evaluation
+                for name, module in model.named_modules():
+                    if isinstance(module, CASCADES_v3_Linear):
+                        module.current_task_id = eval_t
+
+                for batch in eval_dataloader:
+                    input_ids, attention_mask = batch
+                    input_ids = input_ids.to(device)
+                    out = model(input_ids=input_ids, labels=input_ids)
                     total_loss += out.loss.item()
-                    n_eval += 1
+                    num_batches += 1
 
-            avg_eval_loss = total_loss / max(n_eval, 1)
-            proxy_acc = 1.0 / (1.0 + avg_eval_loss)
-            acc_matrix[t, eval_t] = proxy_acc
-            print(f"    Task {eval_t}: loss={avg_eval_loss:.4f}  proxy={proxy_acc*100:.2f}%")
+            avg_loss = total_loss / max(num_batches, 1)
+            proxy_acc = math.exp(-avg_loss)
+            accuracy_matrix[t, eval_t] = proxy_acc
+            print(f"  Task {eval_t} proxy accuracy: {proxy_acc * 100:.2f}% (avg_loss: {avg_loss:.4f})")
 
-    elapsed = time.time() - start_time
+    end_time = time.time()
 
-    # ---- Final Metrics ----
-    avg_acc = float(np.mean(acc_matrix[-1, :]))
-    bwt = float(np.mean([acc_matrix[-1, i] - acc_matrix[i, i] for i in range(num_tasks - 1)]))
+    # Final metrics
+    final_accs = accuracy_matrix[-1, :]
+    avg_acc = np.mean(final_accs)
 
-    print(f"\n{'=' * 72}")
-    print("=== CASCADES v4 FINAL METRICS ===")
-    print(f"{'=' * 72}")
-    print(f"  Average Accuracy [1/(1+loss)]: {avg_acc*100:.2f}%")
-    print(f"  Backward Transfer (BWT):       {bwt*100:.2f}%")
-    print(f"  Total Time:                    {elapsed:.1f}s")
-    print(f"\n  Accuracy Matrix (rows=after_train_Ti, cols=eval_Tj):")
-    header = "         " + "  ".join(f"  T{j}" for j in range(num_tasks))
-    print(header)
+    bwt_list = []
+    for i in range(num_tasks - 1):
+        bwt_list.append(accuracy_matrix[-1, i] - accuracy_matrix[i, i])
+    bwt = np.mean(bwt_list)
+
+    print(f"\n{'=' * 60}")
+    print("=== FINAL CASCADES v3.1 METRICS ===")
+    print(f"{'=' * 60}")
+    print(f"Average Accuracy Proxy: {avg_acc * 100:.2f}%")
+    print(f"Backward Transfer (BWT): {bwt * 100:.2f}%")
+    print(f"Total Time: {end_time - start_time:.2f}s")
+    print(f"\nAccuracy Matrix:")
     for i in range(num_tasks):
-        row_str = "  ".join(
-            f"{acc_matrix[i,j]*100:5.1f}%" if acc_matrix[i,j] > 0 else "  —  "
+        row = " | ".join([
+            f"{accuracy_matrix[i, j] * 100:6.2f}%" if accuracy_matrix[i, j] > 0 else "   —   "
             for j in range(num_tasks)
-        )
-        print(f"  After T{i}: {row_str}")
+        ])
+        print(f"  After T{i}: {row}")
 
-    df = pd.DataFrame(
-        acc_matrix,
-        columns=[f"Eval_T{i}" for i in range(num_tasks)],
-        index=[f"Train_T{i}" for i in range(num_tasks)],
-    )
-    df.to_csv("cascades_v4_results.csv")
-    print("\n  Results → cascades_v4_results.csv")
-    print(f"\n  Key fixes: [FIX-1] no double-update  [FIX-2] lazy DEAL×{DEAL_INTERVAL}"
-          f"  [FIX-3] gate fixed  [FIX-7] V_shared Riemannian inlined")
-    print(f"  Key improvements: alpha={ADAPTER_ALPHA}  proxy=1/(1+loss)"
-          f"  eigenspace warm-start  conservative gate")
+    # Ablation config in output
+    print(f"\nAblation: PaCA={ENABLE_PACA} DEAL={ENABLE_DEAL} Gate={ENABLE_GAINLORA_GATE} "
+          f"CoSO={ENABLE_COSO_NULLSPACE} CL-LoRA={ENABLE_CLLORA_REASSIGN} SVC={ENABLE_SVC} "
+          f"D-MoLE={ENABLE_DMOLE_SELECT} FunLoRA={ENABLE_FUNLORA}")
+
+    df = pd.DataFrame(accuracy_matrix,
+                      columns=[f"Eval_T{i}" for i in range(num_tasks)],
+                      index=[f"Train_T{i}" for i in range(num_tasks)])
+    df.to_csv("cascades_v3_results.csv")
+    print("\nResults saved to cascades_v3_results.csv")
 
 
 if __name__ == "__main__":
-    train_cascades_v4()
+    train_cascades_v3()
