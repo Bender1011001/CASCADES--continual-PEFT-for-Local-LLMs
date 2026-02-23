@@ -438,12 +438,31 @@ class CASCADES_v6_Linear(nn.Module):
 
     def forward(self, x, *args, **kwargs):
         base_out = self.base_layer(x, *args, **kwargs) if not isinstance(self.base_layer, nn.Linear) else self.base_layer(x)
-        if self.is_critical:
-            adapt_out = self.adapter(x)
-        else:
-            adapt_out = self.adapter(x)
+        adapt_out = self.adapter(x)
         # Ensure adapter output dtype matches base output to prevent SDPA mismatch
         return base_out + 0.1 * adapt_out.to(base_out.dtype)
+        
+    def promote(self, rank=8):
+        """Phase-Transition leaps: Promotes a rank-1 FunLoRA to a full Resonant core.
+           Safely handles transferring the activation weight onto the new structure."""
+        if self.is_critical: return False
+        
+        self.is_critical = True
+        new_adapter = CASCADES_v6_Adapter(self.in_features, self.out_features, rank=rank)
+        new_adapter = new_adapter.to(self.adapter.a.device)
+        self.adapter = new_adapter
+        return True
+        
+    def demote(self):
+        """Phase-Transition leaps: Demotes a dormant Resonant core back down 
+           to a rank-1 FunLoRA to free up compute bounds."""
+        if not self.is_critical: return False
+        
+        self.is_critical = False
+        new_adapter = FunLoRA_Adapter_Optimized(self.in_features, self.out_features)
+        new_adapter = new_adapter.to(self.adapter.U_shared.device)
+        self.adapter = new_adapter
+        return True
 
 
 # --- Intersection D: D-MoLE Layer Importance Selection ---
@@ -462,12 +481,14 @@ def compute_layer_importance(model, dataloader, device, threshold=0.15):
 
     # Register forward hooks to capture activation variance per layer
     for name, module in model.named_modules():
-        if isinstance(module, nn.Linear) or type(module).__name__ == "Linear4bit":
+        if isinstance(module, CASCADES_v6_Linear) or isinstance(module, nn.Linear) or type(module).__name__ == "Linear4bit":
             activation_stats[name] = 0.0
             def make_hook(layer_name):
                 def hook_fn(mod, inp, out):
                     if isinstance(out, torch.Tensor):
                         activation_stats[layer_name] += out.float().var().item()
+                    elif isinstance(out, tuple) and isinstance(out[0], torch.Tensor):
+                        activation_stats[layer_name] += out[0].float().var().item()
                 return hook_fn
             hooks.append(module.register_forward_hook(make_hook(name)))
 
@@ -656,48 +677,47 @@ def train_cascades_v3():
         dataloader = prepare_data(tokenizer, t)
 
         # Build optimizer: shared subspace + task lambdas + gates + FunLoRA params
-        param_groups = []
-        
-        # Track all parameter IDs added to specific groups so they aren't duplicated in the fallback group
-        assigned_param_ids = set()
-
-        # Liquid Core routing parameters (Router + 4 Stiefel cores)
-        liquid_core_params = [p for a in critical_adapters for p in a.liquid_core.parameters()]
-        if liquid_core_params:
-            param_groups.append({'params': liquid_core_params, 'lr': 5e-3})
-            assigned_param_ids.update(id(p) for p in liquid_core_params)
-
-        # GainLoRA gate params
-        if ENABLE_GAINLORA_GATE:
-            gate_params = [p for a in critical_adapters if hasattr(a, 'gate_proj') for p in a.gate_proj.parameters()]
-            if gate_params:
-                param_groups.append({'params': gate_params, 'lr': 1e-3})
-                assigned_param_ids.update(id(p) for p in gate_params)
-
-        # FunLoRA params
-        funlora_params = [p for a in funlora_adapters for p in a.parameters()]
-        if funlora_params:
-            param_groups.append({'params': funlora_params, 'lr': 1e-4})
-            assigned_param_ids.update(id(p) for p in funlora_params)
-
-        # V6 FIX: Explicitly exclude U_shared and V_shared from standard Euclidean optimization.
-        # They must only be updated via the Riemannian full_descent_step.
-        stiefel_bases = []
-        for layer in critical_adapters:
-            stiefel_bases.extend([id(layer.U_shared), id(layer.V_shared)])
+        def build_optimizer():
+            param_groups = []
+            assigned_param_ids = set()
             
-        # Add the fallback group for any other trainable parameters not explicitly grouped
-        fallback_params = [
-            p for p in model.parameters() 
-            if p.requires_grad 
-            and id(p) not in stiefel_bases 
-            and id(p) not in assigned_param_ids
-        ]
-        
-        if fallback_params:
-            param_groups.append({"params": fallback_params, "lr": 5e-4})
+            # Recalculate which adapters are currently critical/funlora after potential dynamic D-MoLE swaps
+            current_critical = [m.adapter for m in model.modules() if isinstance(m, CASCADES_v6_Linear) and m.is_critical]
+            current_funlora  = [m.adapter for m in model.modules() if isinstance(m, CASCADES_v6_Linear) and not m.is_critical]
+
+            liquid_core_params = [p for a in current_critical for p in a.liquid_core.parameters()]
+            if liquid_core_params:
+                param_groups.append({'params': liquid_core_params, 'lr': 5e-3})
+                assigned_param_ids.update(id(p) for p in liquid_core_params)
+
+            if ENABLE_GAINLORA_GATE:
+                gate_params = [p for a in current_critical if hasattr(a, 'gate_proj') for p in a.gate_proj.parameters()]
+                if gate_params:
+                    param_groups.append({'params': gate_params, 'lr': 1e-3})
+                    assigned_param_ids.update(id(p) for p in gate_params)
+
+            funlora_params = [p for a in current_funlora for p in a.parameters()]
+            if funlora_params:
+                param_groups.append({'params': funlora_params, 'lr': 1e-4})
+                assigned_param_ids.update(id(p) for p in funlora_params)
+
+            stiefel_bases = []
+            for layer in current_critical:
+                stiefel_bases.extend([id(layer.U_shared), id(layer.V_shared)])
+                
+            fallback_params = [
+                p for p in model.parameters() 
+                if p.requires_grad 
+                and id(p) not in stiefel_bases 
+                and id(p) not in assigned_param_ids
+            ]
             
-        optimizer = optim.Adam(param_groups)
+            if fallback_params:
+                param_groups.append({"params": fallback_params, "lr": 5e-4})
+                
+            return optim.Adam(param_groups), current_critical
+            
+        optimizer, critical_adapters = build_optimizer()
 
         # CASCADES v6: Boundary-less architecture. No explicit CoSO null-space precomputation at boundaries required.
 
@@ -745,7 +765,49 @@ def train_cascades_v3():
             avg_loss = epoch_loss / max(num_batches, 1)
             print(f"Task {t}, Epoch {ep + 1}/{epochs}, Avg Loss: {avg_loss:.4f}")
 
-        # CASCADES v6: Boundary-less architecture. No explicit task gradient storage or EAR snapshotting at end of task required.
+        # --- Continuous D-MoLE Migration (Phase-Transition Hardware) ---
+        if t < num_tasks - 1: # Perform migration at the end of each task (except the last)
+            print(f"\n{'=' * 60}")
+            print(f"Phase-Transition: Continuous D-MoLE Migration")
+            print(f"{'=' * 60}")
+            
+            # Recalculate importance to find the new most active non-critical & least active critical
+            current_wrapper_modules = {name: m for name, m in model.named_modules() if isinstance(m, CASCADES_v6_Linear)}
+            
+            # Re-evaluate layer variance to map topological activations dynamically
+            importance_scores = compute_layer_importance(model, dataloader, device, threshold=0.15)
+            
+            promoted, demoted = 0, 0
+            if importance_scores:
+                # Rank layers by importance (highest score first)
+                sorted_layers = sorted(importance_scores.items(), key=lambda x: x[1], reverse=True)
+                
+                # Top 10% most active overall -> Should be Critical (Rank-8)
+                # Bottom 50% least active overall -> Should be FunLoRA (Rank-1)
+                top_k = max(2, len(sorted_layers) // 10)
+                bottom_k = max(2, len(sorted_layers) // 2)
+                
+                most_active_names = [name for name, score in sorted_layers[:top_k]]
+                least_active_names = [name for name, score in sorted_layers[-bottom_k:]]
+                
+                # Demote dormant criticals
+                for name in least_active_names:
+                    if name in current_wrapper_modules:
+                        w = current_wrapper_modules[name]
+                        if w.is_critical:
+                            if w.demote(): demoted += 1
+                            
+                # Promote highly active non-criticals
+                for name in most_active_names:
+                    if name in current_wrapper_modules:
+                        w = current_wrapper_modules[name]
+                        if not w.is_critical:
+                            if w.promote(): promoted += 1
+                    
+            print(f"Dynamically Promoted (FunLoRA -> ResonantCore): {promoted}")
+            print(f"Dynamically Demoted (ResonantCore -> FunLoRA): {demoted}")
+            print(f"VRAM Optimization: Stale optimizer momentum buffers will be wiped and reconstructed.")
+
         # --- Evaluation ---
         print(f"\n--- Evaluation after Task {t} ---")
         for eval_t in range(t + 1):

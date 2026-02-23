@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,8 +10,11 @@ import numpy as np
 import pandas as pd
 import time
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from datasets import load_dataset
 from torch.utils.data import DataLoader
+
+# Use the unified data module so the baseline sees EXACTLY the same data as CASCADES.
+# This is required for a fair experimental comparison.
+from cascades.data import prepare_dataloader as _prepare_dataloader
 
 # --- Standard LoRA Baseline for Continual Learning Comparison ---
 # Same model, same data, same eval — no Hamiltonian descent, no SVC, no Riemannian tricks
@@ -63,19 +70,8 @@ def inject_lora(model, rank=8, target_modules=["q_proj", "v_proj", "up_proj", "d
     return adapters
 
 def prepare_data(tokenizer, task_number):
-    """Same data as CASCADES for fair comparison."""
-    torch.manual_seed(42 + task_number)
-    prompts = [
-        f"Task {task_number}: Evaluate the sentiment. This product is great! -> Positive",
-        f"Task {task_number}: Evaluate the sentiment. I hated the delivery. -> Negative",
-        f"Task {task_number}: Evaluate the sentiment. Excellent quality. -> Positive",
-        f"Task {task_number}: Evaluate the sentiment. Completely broken. -> Negative"
-    ] * 10
-    
-    encodings = tokenizer(prompts, return_tensors="pt", truncation=True, padding=True)
-    
-    dataset = torch.utils.data.TensorDataset(encodings.input_ids, encodings.attention_mask)
-    return DataLoader(dataset, batch_size=2, shuffle=True)
+    """Delegates to the unified data module — identical to CASCADES data."""
+    return _prepare_dataloader(tokenizer, task_number, batch_size=2)
 
 def train_lora_baseline():
     device = "cuda" if torch.cuda.is_available() else "cpu"

@@ -1,0 +1,30 @@
+# CASCADES: Parameter-Efficient Continual Adaptation via Shared Dynamic Subspaces
+# Pinned versions for reproducibility.  Tested with Python 3.13 on Windows 11.
+#
+# To install:
+#   pip install -r requirements.txt
+#
+# GPU:  CUDA 12.x recommended.  bitsandbytes requires a supported CUDA GPU for
+#       4-bit quantization.  CPU-only runs work for the unit tests only.
+
+# ── Core deep learning ────────────────────────────────────────────────
+torch>=2.3.0
+numpy>=1.26.0
+
+# ── HuggingFace stack ────────────────────────────────────────────────
+transformers>=4.44.0
+tokenizers>=0.21.1        # required by Qwen3 tokenizer
+accelerate>=0.33.0        # device_map="auto"
+bitsandbytes>=0.43.0      # 4-bit QLoRA
+
+# ── Data & analysis ──────────────────────────────────────────────────
+datasets>=2.20.0
+pandas>=2.2.0
+scipy>=1.13.0             # statistical tests (Wilcoxon, t-test)
+
+# ── Testing ───────────────────────────────────────────────────────────
+pytest>=8.2.0
+pytest-cov>=5.0.0         # coverage reports
+
+# ── Experiment tracking (optional, comment out if not needed) ─────────
+# wandb>=0.17.0

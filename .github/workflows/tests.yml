@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  unit-tests:
+    name: Unit Tests (CPU-only)
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install CPU-only dependencies
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy pandas scipy pytest pytest-cov
+
+      - name: Install package in editable mode
+        run: pip install -e ".[test]" --no-deps
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/test_math.py tests/test_metrics.py tests/test_data.py \
+            -v --tb=short \
+            --cov=cascades --cov-report=term-missing \
+            --cov-fail-under=80
+
+      - name: Run adapter tests (stub HuggingFace)
+        run: |
+          pytest tests/test_adapters.py -v --tb=short
