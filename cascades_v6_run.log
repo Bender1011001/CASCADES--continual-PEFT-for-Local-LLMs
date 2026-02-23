@@ -1,0 +1,42 @@
+============================================================
+CASCADES REASONING PIPELINE
+============================================================
+Ablation flags:
+  PaCA (CaLoRA):        True
+  DEAL heat kernel:     True
+  GainLoRA gate:        True
+  CoSO null-space:      True
+  CL-LoRA reassignment: True
+  SVC calibration:      True
+  D-MoLE layer select:  True
+  FunLoRA rank-1:       True
+  Device: cuda
+============================================================
+
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]
+Loading checkpoint shards:  50%|#####     | 1/2 [00:04<00:04,  4.86s/it]
+Loading checkpoint shards: 100%|##########| 2/2 [00:08<00:00,  3.87s/it]
+Loading checkpoint shards: 100%|##########| 2/2 [00:08<00:00,  4.02s/it]
+Estimated quantization noise std: 72.440296
+D-MoLE: 21/253 layers marked critical (threshold=0.15)
+Injected: 14 full CASCADES + 130 FunLoRA rank-1
+
+============================================================
+--- Training CASCADES Task 0 ---
+============================================================
+    [Ep 1 B 1] Starting batch...
+    [Ep 1 B 1] Forward pass...
+    [Ep 1 B 1] Backward pass (loss=1.7898)...
+    [Ep 1 B 1] Gradient clipping...
+    [Ep 1 B 1] Adapter CASCADES descent step...
+Traceback (most recent call last):
+  File "E:\code.projects\research\cascades_exp\hf_cascades_reasoning.py", line 750, in <module>
+    train_cascades_v3()
+    ~~~~~~~~~~~~~~~~~^^
+  File "E:\code.projects\research\cascades_exp\hf_cascades_reasoning.py", line 681, in train_cascades_v3
+    a.full_descent_step(lr=0.01)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "E:\code.projects\research\cascades_exp\hf_cascades_reasoning.py", line 358, in full_descent_step
+    self.ema_V.copy_(self.ema_V @ R_V.T)
+                     ~~~~~~~~~~~^~~~~~~
+RuntimeError: mat1 and mat2 shapes cannot be multiplied (8x9728 and 8x8)
