@@ -1,0 +1,10 @@
+{
+  "model": "Qwen3-4B",
+  "seed": 42,
+  "config": "v5: TAG + ARR",
+  "vram_peak_gb": "<8",
+  "acc_proxy_percent": 5.41,
+  "bwt_percent": -0.93,
+  "timestamp": "2026-02-22T18:42:00Z",
+  "git_commit": "HEAD"
+}
