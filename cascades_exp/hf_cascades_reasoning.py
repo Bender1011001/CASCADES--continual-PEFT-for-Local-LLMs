@@ -392,8 +392,9 @@ class CASCADES_v6_Adapter(nn.Module):
             self.V_shared.copy_(Q_V.T)
             
             # 8. SYSTEM-WIDE BASIS COUNTER-ROTATION (The Ripple Fix)
-            R_U_inv = torch.linalg.solve(R_U, torch.eye(R_U.shape[0], device=R_U.device))
-            R_V_inv = torch.linalg.solve(R_V, torch.eye(R_V.shape[0], device=R_V.device))
+            # Use pseudo-inverse to prevent CUDA deadlocks if R is ill-conditioned (which happens in baseline ablation)
+            R_U_inv = torch.linalg.pinv(R_U)
+            R_V_inv = torch.linalg.pinv(R_V)
 
             # RULE 2: Contravariant Cores (Mix by R)
             for k in range(self.liquid_core.num_cores):

@@ -1,0 +1,69 @@
+Starting Final CASCADES v8 Benchmark Suite...
+
+============================================================
+Results for Full_CASCADES_v8 (Time: 46.04s):
+=== FINAL CASCADES REASONING METRICS ===
+============================================================
+Average Accuracy Proxy: 14.87%
+Backward Transfer (BWT): 0.66%
+Total Time: 27.05s
+
+Accuracy Matrix:
+  After T0:  22.42% |    —    |    —   
+  After T1:  22.90% |   7.10% |    —   
+  After T2:  23.48% |   7.36% |  13.76%
+
+Ablation: PaCA=True DEAL=True Gate=True CoSO=True CL-LoRA=True SVC=True D-MoLE=True FunLoRA=True
+
+Results saved to cascades_reasoning_results.csv
+
+============================================================
+Results for No_DMoLE (Time: 83.58s):
+=== FINAL CASCADES REASONING METRICS ===
+============================================================
+Average Accuracy Proxy: 13.47%
+Backward Transfer (BWT): 0.16%
+Total Time: 65.33s
+
+Accuracy Matrix:
+  After T0:  21.28% |    —    |    —   
+  After T1:  21.41% |   6.54% |    —   
+  After T2:  21.54% |   6.59% |  12.28%
+
+Ablation: PaCA=True DEAL=True Gate=True CoSO=True CL-LoRA=True SVC=True D-MoLE=False FunLoRA=False
+
+Results saved to cascades_reasoning_results.csv
+
+============================================================
+Results for No_Autopoiesis_EAR (Time: 44.59s):
+=== FINAL CASCADES REASONING METRICS ===
+============================================================
+Average Accuracy Proxy: 14.87%
+Backward Transfer (BWT): 0.66%
+Total Time: 25.51s
+
+Accuracy Matrix:
+  After T0:  22.42% |    —    |    —   
+  After T1:  22.90% |   7.10% |    —   
+  After T2:  23.48% |   7.36% |  13.76%
+
+Ablation: PaCA=True DEAL=True Gate=True CoSO=False CL-LoRA=False SVC=True D-MoLE=True FunLoRA=True
+
+Results saved to cascades_reasoning_results.csv
+
+============================================================
+Results for Baseline_LoRA (Time: 74.97s):
+=== FINAL CASCADES REASONING METRICS ===
+============================================================
+Average Accuracy Proxy: 13.61%
+Backward Transfer (BWT): 0.24%
+Total Time: 56.85s
+
+Accuracy Matrix:
+  After T0:  21.34% |    —    |    —   
+  After T1:  21.51% |   6.59% |    —   
+  After T2:  21.72% |   6.68% |  12.44%
+
+Ablation: PaCA=False DEAL=False Gate=False CoSO=False CL-LoRA=False SVC=False D-MoLE=False FunLoRA=False
+
+Results saved to cascades_reasoning_results.csv

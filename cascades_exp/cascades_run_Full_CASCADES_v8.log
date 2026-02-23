@@ -1,0 +1,29 @@
+============================================================
+CASCADES REASONING PIPELINE
+============================================================
+Ablation flags:
+  PaCA (CaLoRA):        True
+  DEAL heat kernel:     True
+  GainLoRA gate:        True
+  CoSO null-space:      True
+  CL-LoRA reassignment: True
+  SVC calibration:      True
+  D-MoLE layer select:  True
+  FunLoRA rank-1:       True
+  Device: cuda
+============================================================
+Estimated quantization noise std: 72.440296
+
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]
+Loading checkpoint shards:  50%|#####     | 1/2 [00:04<00:04,  4.90s/it]
+Loading checkpoint shards: 100%|##########| 2/2 [00:08<00:00,  3.89s/it]
+Loading checkpoint shards: 100%|##########| 2/2 [00:08<00:00,  4.04s/it]
+Traceback (most recent call last):
+  File "E:\code.projects\research\cascades_exp\hf_cascades_reasoning.py", line 868, in <module>
+    train_cascades_v3()
+    ~~~~~~~~~~~~~~~~~^^
+  File "E:\code.projects\research\cascades_exp\hf_cascades_reasoning.py", line 654, in train_cascades_v3
+    probe_loader = prepare_data(tokenizer, 0)
+  File "E:\code.projects\research\cascades_exp\hf_cascades_reasoning.py", line 589, in prepare_data
+    raise FileNotFoundError(f"Missing dataset: {file_path}. Please generate it using the prompt and save it here.")
+FileNotFoundError: Missing dataset: cascades_exp/task0_logic.jsonl. Please generate it using the prompt and save it here.
