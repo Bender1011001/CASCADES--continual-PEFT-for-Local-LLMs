@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CASCADES v9 Web UI</title>
+    <style>
+      :root {
+        --bg-color: #0f172a;
+        --chat-bg: #1e293b;
+        --text: #f8fafc;
+        --accent: #3b82f6;
+        --bot-bg: #334155;
+        --user-bg: #2563eb;
+      }
+
+      body {
+        font-family:
+          "Inter",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
+        margin: 0;
+        padding: 0;
+        background-color: var(--bg-color);
+        color: var(--text);
+        display: flex;
+        height: 100vh;
+        justify-content: center;
+      }
+
+      .chat-container {
+        width: 100%;
+        max-width: 900px;
+        display: flex;
+        flex-direction: column;
+        background-color: var(--chat-bg);
+        box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+        border-left: 1px solid #334155;
+        border-right: 1px solid #334155;
+      }
+
+      .header {
+        padding: 20px;
+        background: linear-gradient(90deg, #1e293b 0%, #0f172a 100%);
+        border-bottom: 2px solid var(--accent);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .header h1 {
+        margin: 0;
+        font-size: 1.5rem;
+        color: #60a5fa;
+        font-weight: 600;
+      }
+
+      .header span {
+        font-size: 0.9rem;
+        color: #94a3b8;
+        background: #0f172a;
+        padding: 4px 12px;
+        border-radius: 12px;
+        border: 1px solid #334155;
+      }
+
+      .messages {
+        flex-grow: 1;
+        padding: 20px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .message {
+        max-width: 80%;
+        padding: 12px 18px;
+        border-radius: 8px;
+        line-height: 1.5;
+        font-size: 0.95rem;
+        word-wrap: break-word;
+      }
+
+      .user {
+        align-self: flex-end;
+        background-color: var(--user-bg);
+        border-bottom-right-radius: 2px;
+      }
+
+      .bot {
+        align-self: flex-start;
+        background-color: var(--bot-bg);
+        border-bottom-left-radius: 2px;
+        border: 1px solid #475569;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      }
+
+      .typing {
+        align-self: flex-start;
+        color: #94a3b8;
+        font-style: italic;
+        font-size: 0.9rem;
+        display: none;
+      }
+
+      .input-area {
+        padding: 20px;
+        background-color: #1e293b;
+        border-top: 1px solid #334155;
+        display: flex;
+        gap: 10px;
+      }
+
+      textarea {
+        flex-grow: 1;
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid #475569;
+        background-color: #0f172a;
+        color: var(--text);
+        font-family: inherit;
+        font-size: 1rem;
+        resize: none;
+        height: 24px;
+        outline: none;
+        transition: border-color 0.2s;
+      }
+
+      textarea:focus {
+        border-color: var(--accent);
+      }
+
+      button {
+        padding: 0 24px;
+        background-color: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 0.2s;
+      }
+
+      button:hover {
+        background-color: #2563eb;
+      }
+
+      button:disabled {
+        background-color: #475569;
+        cursor: not-allowed;
+      }
+
+      /* Scrollbar styling */
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: var(--bg-color);
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #475569;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #64748b;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="chat-container">
+      <div class="header">
+        <h1>CASCADES v9 Interactive Console</h1>
+        <span>Model: Qwen2.5-1.5B (4-bit D-MoLE)</span>
+      </div>
+
+      <div class="messages" id="chatWindow">
+        <div class="message bot">
+          Welcome to the CASCADES v9 interface. The internal PyTorch graph has
+          been injected with the learned Stiefel manifolds ($U$, $V$) and
+          dynamic Liquid Cores ($S$). The D-MoLE semantic router is active. How
+          can I assist you?
+        </div>
+      </div>
+      <div class="typing" id="typingIndicator">
+        Computing CASCADES Riemannian Forward Pass...
+      </div>
+
+      <div class="input-area">
+        <textarea
+          id="userInput"
+          placeholder="Ask a complex reasoning question..."
+          rows="1"
+          onkeypress="handleEnter(event)"
+        ></textarea>
+        <button id="sendBtn" onclick="sendMessage()">Send</button>
+      </div>
+    </div>
+
+    <script>
+      const chatWindow = document.getElementById("chatWindow");
+      const userInput = document.getElementById("userInput");
+      const typingIndicator = document.getElementById("typingIndicator");
+      const sendBtn = document.getElementById("sendBtn");
+
+      // Auto-resize textarea
+      userInput.addEventListener("input", function () {
+        this.style.height = "24px";
+        this.style.height = this.scrollHeight + "px";
+        if (this.value === "") this.style.height = "24px";
+      });
+
+      function handleEnter(e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendMessage();
+        }
+      }
+
+      function appendMessage(text, isUser) {
+        const msgDiv = document.createElement("div");
+        msgDiv.className = `message ${isUser ? "user" : "bot"}`;
+
+        // Simple text formatting for newlines and code blocks
+        let formattedText = text.replace(/\n/g, "<br>");
+        // Format markdown code blocks
+        formattedText = formattedText.replace(
+          /```([\s\S]*?)```/g,
+          '<pre style="background:#0f172a;padding:10px;border-radius:4px;overflow-x:auto;">$1</pre>',
+        );
+
+        msgDiv.innerHTML = formattedText;
+        chatWindow.appendChild(msgDiv);
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+      }
+
+      async function sendMessage() {
+        const text = userInput.value.trim();
+        if (!text) return;
+
+        appendMessage(text, true);
+        userInput.value = "";
+        userInput.style.height = "24px";
+
+        // Disable UI
+        userInput.disabled = true;
+        sendBtn.disabled = true;
+        typingIndicator.style.display = "block";
+
+        try {
+          const response = await fetch("/api/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              prompt: text,
+              max_tokens: 512,
+              temperature: 0.7,
+            }),
+          });
+
+          if (!response.ok) throw new Error("API request failed");
+
+          const data = await response.json();
+          appendMessage(data.response, false);
+        } catch (error) {
+          console.error("Error:", error);
+          appendMessage(
+            "⚠️ Connection error. Is `cascades_api.py` running on port 5000?",
+            false,
+          );
+        } finally {
+          // Re-enable UI
+          userInput.disabled = false;
+          sendBtn.disabled = false;
+          typingIndicator.style.display = "none";
+          userInput.focus();
+        }
+      }
+    </script>
+  </body>
+</html>

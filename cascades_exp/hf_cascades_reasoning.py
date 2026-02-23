@@ -972,6 +972,15 @@ def train_cascades_v3():
     df.to_csv("cascades_reasoning_results.csv")
     print("\nResults saved to cascades_reasoning_results.csv")
 
+    # --- Phase 12: Weight Persistence ---
+    print("\nSaving CASCADES v9 Manifold Weights...")
+    save_path = "cascades_v9_weights.pt"
+    # Extract only the adapter state dictionary to minimize file size
+    adapter_state = {name: param for name, param in model.named_parameters() if 'wrapper' in name or 'adapter' in name}
+    torch.save(adapter_state, save_path)
+    print(f"Weights saved successfully to {save_path}")
+
+
 
 if __name__ == "__main__":
     train_cascades_v3()
