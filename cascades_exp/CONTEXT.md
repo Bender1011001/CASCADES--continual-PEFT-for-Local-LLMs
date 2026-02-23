@@ -1,8 +1,8 @@
 # CASCADES Experiment Directory
 
 ## Status
-- **Working**: hf_cascades.py (v1), hf_cascades_v2.py (v2 full fusion), hf_cascades_v3.py (v3.1 15-paper), hf_cascades_v4.py (v4 exact math), lora_baseline.py
-- **Completed Runs**: v1 on TinyLlama (fp32), v1 on Qwen3-4B (4-bit), v2 on Qwen3-4B (4-bit), LoRA on Qwen3-4B (4-bit), v3.1 on Qwen3-4B (4-bit), v4 on Qwen3-4B (4-bit)
+- **Working**: hf_cascades.py (v1), hf_cascades_v2.py (v2 full fusion), hf_cascades_v3.py (v3.1 15-paper), hf_cascades_v4.py (v4 exact math), hf_cascades_v5.py (v5 TAG/ARR), lora_baseline.py
+- **Completed Runs**: v1 on TinyLlama/Qwen3, v2 on Qwen3, LoRA on Qwen3, v3.1 on Qwen3, v4 on Qwen3, v5 on Qwen3
 
 ## Tech Stack
 - Python 3.13, PyTorch, HuggingFace transformers, bitsandbytes, tokenizers≥0.21.1
@@ -60,5 +60,5 @@ v4 math corrections enforced strict subspace boundaries via EAR scaling, stabili
 ## Build/Verify
 ```
 cd e:\code.projects\research
-cmd /c "set HF_HUB_DISABLE_PROGRESS_BARS=1 && python cascades_exp/hf_cascades_v3.py 2> cascades_v3_error.log"
+cmd /c "set HF_HUB_DISABLE_PROGRESS_BARS=1 && python cascades_exp/hf_cascades_v4.py"
 ```
