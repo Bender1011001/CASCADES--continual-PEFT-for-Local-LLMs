@@ -1,6 +1,6 @@
 <div align="center">
   <h1>🌊 CASCADES</h1>
-  <p><strong>Parameter-Efficient Continual Adaptation via Shared Dynamic Subspaces</strong></p>
+  <p><strong>Teach your AI new tricks without it forgetting the old ones.</strong></p>
 
   <p>
     <a href="https://pytorch.org/get-started/locally/"><img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white"></a>
@@ -11,11 +11,24 @@
 
 <br/>
 
-## 📖 Overview
+## 🤔 What is CASCADES?
 
-Sequential adaptation of Large Language Models (LLMs) suffers from catastrophic interference and forgetting. While Parameter-Efficient Fine-Tuning (PEFT) reduces parameter footprint, it does not intrinsically solve the geometric overlap of sequential task gradients.
+Normally, when you teach an AI model something new (Task B), it overwrites and forgets what it previously learned (Task A). This is called *catastrophic forgetting*. 
 
-**CASCADES** is a continual PEFT framework engineered for strict VRAM constraints and quantized backbones (e.g., Qwen-4B in 4-bit under 8GB VRAM limit). By explicitly representing the adapter update space as a low-dimensional shared Stiefel manifold, CASCADES constrains updates to feasible, non-interfering directions while aggressively concentrating rank capacity on the network layers that need it most. 
+**CASCADES** is a training framework that prevents this. It acts like a smart traffic controller for the AI's "brain," routing new knowledge into safe, empty spaces without stepping on the old knowledge. Best of all, it's designed to run on consumer hardware (under 8GB of VRAM).
+
+### What did we train it to do?
+To prove CASCADES works, we tested it on a **Sequential Domain Adaptation** challenge. We taught the AI to analyze text across three distinct domains, one after the other:
+1. **Task 0**: Product Reviews ("Amazing value" vs "Waste of money")
+2. **Task 1**: Movie Reviews ("Breathtaking cinematography" vs "Boring storyline")
+3. **Task 2**: Restaurant Reviews ("Divine flavors" vs "Cold food")
+
+Without CASCADES, learning Task 2 would destroy the AI's ability to do Task 0. With CASCADES, the AI accurately remembers how to perform all three.
+
+### The Base Model
+All experiments in this repository utilize the **`p-e-w/Qwen3-4B-Instruct-2507-heretic`** base model, quantized to 4-bit to fit easily within memory limits.
+
+---
 
 ## ✨ Key Features (The 5 Pillars)
 
@@ -25,23 +38,29 @@ Sequential adaptation of Large Language Models (LLMs) suffers from catastrophic 
 4. **Energy-Accounted Reassignment (EAR):** Enforces hard non-interference by projecting into the historical orthogonal-complement, then exactly re-allocating blocked step scalar energy ($||g||_2$) back into the feasible step to preserve continuous adaptation scale.
 5. **Budgeted D-MoLE Allocation & FunLoRA Fallback:** First-order activation-variance proxy scores assign heavy Stiefel machinery only to highly critical layers. Remaining layers receive parameter-minimal functional rank-1 approximations.
 
-## 🚀 Quickstart
+## 🚀 How to Use It (Quickstart)
 
-### Dependencies
-Requires Python 3.10+ and a CUDA-capable GPU.
+If you want to run the CASCADES experiment yourself to see the AI learn sequentially without forgetting, follow these steps:
+
+### 1. Install Dependencies
+You need Python installed (3.10+) and a CUDA-capable GPU.
 ```bash
-pip install torch transformers accelerate bitsandbytes
+pip install torch transformers accelerate bitsandbytes pandas numpy
 ```
 
-### Running CASCADES
-The primary evaluation scripts are located in `cascades_exp/`. 
-To run the fully mathematically rigorous **CASCADES v4** under strict 8GB constraints (evaluating on a 3-task continuous stream):
+### 2. Run the Evaluation Script
+The primary scripts are located in the `cascades_exp/` folder. To run the most stable and mathematically rigorous version (**CASCADES v4**):
 
 ```bash
-# Disable progress bars for cleaner logging
+# Clone the repository and enter the directory
+git clone https://github.com/your-username/cascades.git
+cd cascades
+
+# Run the training script (disabling progress bars for a cleaner output log)
 export HF_HUB_DISABLE_PROGRESS_BARS=1
 python cascades_exp/hf_cascades_v4.py
 ```
+This will automatically download the `heretic` model, train it sequentially on the review tasks, and print out the accuracy and retention (Backward Transfer) metrics.
 
 ## 📊 Empirical Results 
 
@@ -58,12 +77,16 @@ Experiments evaluated on a sequential 3-task stream using a 4-bit quantized Qwen
 ## 📂 Project Structure
 ```text
 .
-├── CASCADES_proposal.md         # Full theoretical backbone and 15-paper synthesis
-├── cascades_exp/                # Core experiments module
-│   ├── hf_cascades_v4.py        # Final v4 code (Exact EAR + Structural Filtering)
-│   ├── hf_cascades_v3.py        # Prior v3.1 tuning run
-│   ├── lora_baseline.py         # Budget-matched LoRA naive comparison
-│   └── CONTEXT.md               # Directory operational context and trap-diary
+├── cascades_exp/                # Core execution scripts
+│   ├── hf_cascades_v4.py        # Most stable version (run this one!)
+│   ├── hf_cascades_v5.py        # Experimental dev branch (TAG + ARR)
+│   └── lora_baseline.py         # Standard LoRA comparison (fails the forgetting test)
+├── docs/                        
+│   └── TUNING_WALKTHROUGH...md  # Detailed devlog tracking our accuracy improvements
+├── results/                     
+│   └── summary.csv              # The official metrics across all our tested versions
+├── papers/                      # PDF reference materials for the math behind CASCADES
+└── README.md                    # This file!
 ```
 
 ## 📜 Citation & Context
