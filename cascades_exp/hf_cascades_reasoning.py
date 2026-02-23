@@ -266,24 +266,7 @@ class CASCADES_v6_Adapter(nn.Module):
         with torch.no_grad():
             self.streaming_sketch_U.lerp_(tangent_U, 1 - self.beta_ear)
 
-    def amortized_null_space_extraction(self):
-        """Amortizes the eigendecomposition to prevent cuSOLVER sync thrashing."""
-        with torch.no_grad():
-            # 1. Compute tiny (r x r) Gram matrix C = S^T S
-            C_U = self.streaming_sketch_U.T @ self.streaming_sketch_U
-            
-            # 2. Eigendecomposition on the tiny matrix
-            _, V_eig = torch.linalg.eigh(C_U)
-            
-            # 3. Project top-k principal combinations back to ambient d_out space
-            k = self.Q_null_U.shape[1]
-            occ_ambient_U = self.streaming_sketch_U @ V_eig[:, -k:]
-            
-            # 4. Orthonormalize to form the Stiefel projector
-            if occ_ambient_U.norm() > 1e-8:
-                Q_U, _ = torch.linalg.qr(occ_ambient_U)
-                self.Q_null_U.copy_(Q_U)
-                self.ear_initialized = True
+
 
     def full_descent_step(self, lr=0.01):
         """Unified CASCADES v9 Ecosystem Descent Pipeline"""
@@ -294,6 +277,8 @@ class CASCADES_v6_Adapter(nn.Module):
             grad_U, self.U_shared.grad = self.U_shared.grad.clone(), None
             grad_V, self.V_shared.grad = self.V_shared.grad.clone(), None
 
+            self.step_counter += 1
+
             # === CASCADES v9: MOE INTERFERENCE FIX (RIEMANNIAN FREEZE) ===
             # Detect if this expert was unrouted (zero gradient energy). 
             # If so, we bypass EMA decay and Retraction entirely to perfectly 
@@ -301,7 +286,11 @@ class CASCADES_v6_Adapter(nn.Module):
             if grad_U.norm() < 1e-8 and grad_V.norm() < 1e-8:
                 return 
 
-            self.step_counter += 1
+            # Track EMA of Gradient Norm (for relative Expansion checking)
+            if not hasattr(self, 'ema_grad_norm'):
+                self.ema_grad_norm = grad_U.norm()
+            else:
+                self.ema_grad_norm = 0.99 * self.ema_grad_norm + 0.01 * grad_U.norm()
 
             # 2. Component 3: Streaming PaCA (Temporal Causal Mask)
             # Apply after a small warmup to allow Slow EMA to populate
@@ -335,8 +324,7 @@ class CASCADES_v6_Adapter(nn.Module):
             if ENABLE_COSO_NULLSPACE:
                 self.streaming_ear_update(tangent_U)
                 
-                if self.step_counter % 25 == 0:
-                    self.amortized_null_space_extraction()
+                # NOTE: Amortized null-space extraction is now batched globally per epoch.
 
                 if self.ear_initialized:
                     occ_U = self.Q_null_U @ (self.Q_null_U.T @ tangent_U)
@@ -345,8 +333,8 @@ class CASCADES_v6_Adapter(nn.Module):
                     n_orig, n_free = tangent_U.norm(), free_U.norm()
                     
                     # === V8 AUTOPOIESIS (DYNAMIC RANK EXPANSION) ===
-                    # If the null-space is suffocating learning (< 10% gradient energy allowed)
-                    if (n_free / (n_orig + 1e-8)) < 0.10 and self.U_shared.shape[1] < 16: # Max rank safety cap
+                    # If the null-space free energy is suffocating learning relative to historical norm
+                    if n_free < 0.10 * self.ema_grad_norm and self.U_shared.shape[1] < 16: # Max rank safety cap
                         with torch.no_grad():
                             print(f"🧬 Autopoiesis Triggered! Expanding Rank {self.U_shared.shape[1]} -> {self.U_shared.shape[1] + 1}")
                             
@@ -422,72 +410,8 @@ class CASCADES_v6_Adapter(nn.Module):
                 
             if ENABLE_COSO_NULLSPACE:
                 self.streaming_sketch_U.copy_(self.streaming_sketch_U @ R_U_inv)
-
-            # 9. Autopoietic Breathing Manifolds & Lazy SVC (CASCADES v9)
-            if ENABLE_SVC and self.step_counter % 50 == 0:
-                with torch.no_grad():
-                    # --- A. CONTINUOUS RANK CONTRACTION (EXHALE) ---
-                    current_r = self.U_shared.shape[1]
-                    if current_r > 2: # Enforce absolute structural survival bound
-                        # 1. Evaluate Covariant Structural Energy across all K cores
-                        C_L = sum(c @ c.T for c in self.liquid_core.core_pool)
-                        C_R = sum(c.T @ c for c in self.liquid_core.core_pool)
-                        
-                        # 2. Extract global orthogonal rotation frames
-                        D_U, O_U = torch.linalg.eigh(C_L)
-                        D_V, O_V = torch.linalg.eigh(C_R)
-                        
-                        # 3. Check if the weakest global channel is mathematically dead
-                        if D_U[0] < 1e-5 and D_V[0] < 1e-5:
-                            print(f"🫁 Breathing Manifold Triggered! Slicing dead rank {current_r} -> {current_r - 1}")
-                            
-                            # 4. Exact Isometric Counter-Rotation
-                            self.U_shared.data = self.U_shared.data @ O_U
-                            self.V_shared.data = O_V.T @ self.V_shared.data
-                            
-                            for k in range(self.liquid_core.num_cores):
-                                self.liquid_core.core_pool.data[k] = O_U.T @ self.liquid_core.core_pool.data[k] @ O_V
-                                
-                            self.ema_U.data = self.ema_U.data @ O_U
-                            self.ema_V.data = O_V.T @ self.ema_V.data
-                            if ENABLE_COSO_NULLSPACE: self.streaming_sketch_U.data = self.streaming_sketch_U.data @ O_U
-                            
-                            if ENABLE_PACA:
-                                self.ema_fast_U.data = self.ema_fast_U.data @ O_U
-                                self.ema_slow_U.data = self.ema_slow_U.data @ O_U
-                                self.ema_fast_V.data = O_V.T @ self.ema_fast_V.data
-                                self.ema_slow_V.data = O_V.T @ self.ema_slow_V.data
-                                
-                            # 5. Amputation: Exhale VRAM by slicing off index 0 natively
-                            self.U_shared.data = self.U_shared.data[:, 1:]
-                            self.V_shared.data = self.V_shared.data[1:, :]
-                            self.liquid_core.core_pool.data = self.liquid_core.core_pool.data[:, 1:, 1:]
-                            
-                            self.ema_U.data = self.ema_U.data[:, 1:]
-                            self.ema_V.data = self.ema_V.data[1:, :]
-                            
-                            if ENABLE_PACA:
-                                self.ema_fast_U.data = self.ema_fast_U.data[:, 1:]
-                                self.ema_slow_U.data = self.ema_slow_U.data[:, 1:]
-                                self.ema_fast_V.data = self.ema_fast_V.data[1:, :]
-                                self.ema_slow_V.data = O_V.T @ self.ema_slow_V.data # Slicing off first row for transposed V
-                                self.ema_fast_V.data = self.ema_fast_V.data[1:, :]
-                                self.ema_slow_V.data = self.ema_slow_V.data[1:, :]
-                                
-                            if ENABLE_COSO_NULLSPACE:
-                                self.streaming_sketch_U.data = self.streaming_sketch_U.data[:, 1:]
-                                self.ear_initialized = False # Force Q_null to rebuild
-                                self.Q_null_U = torch.zeros(self.out_features, max(1, (self.U_shared.shape[1]) // 2), device=self.U_shared.device)
-                                
-                            self.contracted_this_step = True # Signal outer optimizer
-
-                    # --- B. SINGULAR VALUE CALIBRATION (SVC) BUGFIX ---
-                    for k in range(self.liquid_core.num_cores):
-                        # V9 Bugfix: PyTorch SVD natively returns Vh (conjugate transpose). 
-                        # Reconstructing via V_h prevents the erroneous double-transpose that corrupted v8 geometry.
-                        U_s, S_s, V_h = torch.linalg.svd(self.liquid_core.core_pool[k].data, full_matrices=False)
-                        S_s = S_s / (1 + self.svc_lambda * S_s)
-                        self.liquid_core.core_pool.data[k] = U_s @ torch.diag(S_s) @ V_h
+            
+            # NOTE: Autopoietic Contraction and SVC are now batched globally for efficiency.
 
 
 
@@ -678,10 +602,10 @@ def inject_cascades_v3(model, rank=8, target_modules=None, layer_importance=None
     return adapters_critical, adapters_funlora
 
 
-def prepare_data(tokenizer, task_number):
+def prepare_data(tokenizer, task_number, base_seed=42):
     """Loads domain-specific JSONL prompts for reasoning adaptation."""
     import os
-    torch.manual_seed(42 + task_number)
+    torch.manual_seed(base_seed + task_number)
 
     files = [
         "cascades_exp/task0_logic.jsonl",
@@ -715,8 +639,95 @@ def estimate_quant_noise(model):
     return np.mean(stds) if stds else 0.0
 
 
-def train_cascades_v3():
+def batched_null_space_extraction(adapters):
+    if not adapters: return
+    with torch.no_grad():
+        C_Us = torch.stack([a.streaming_sketch_U.T @ a.streaming_sketch_U for a in adapters])
+        _, V_eigs = torch.linalg.eigh(C_Us)
+        for i, a in enumerate(adapters):
+            k = a.Q_null_U.shape[1]
+            occ_ambient_U = a.streaming_sketch_U @ V_eigs[i, :, -k:]
+            if occ_ambient_U.norm() > 1e-8:
+                Q_U, _ = torch.linalg.qr(occ_ambient_U)
+                a.Q_null_U.copy_(Q_U)
+                a.ear_initialized = True
+
+def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_NULLSPACE):
+    if not adapters: return
+    with torch.no_grad():
+        # --- A. CONTINUOUS RANK CONTRACTION (EXHALE) ---
+        C_Ls, C_Rs, exhaling_adapters = [], [], []
+        for a in adapters:
+            current_r = a.U_shared.shape[1]
+            if current_r > 2:
+                C_L = sum(c @ c.T for c in a.liquid_core.core_pool)
+                C_R = sum(c.T @ c for c in a.liquid_core.core_pool)
+                C_Ls.append(C_L)
+                C_Rs.append(C_R)
+                exhaling_adapters.append(a)
+                
+        if exhaling_adapters:
+            # Batched Eigh
+            D_Us, O_Us = torch.linalg.eigh(torch.stack(C_Ls))
+            D_Vs, O_Vs = torch.linalg.eigh(torch.stack(C_Rs))
+            
+            for i, a in enumerate(exhaling_adapters):
+                if (D_Us[i, 0] / (D_Us[i].sum() + 1e-8) < 0.0001) and (D_Vs[i, 0] / (D_Vs[i].sum() + 1e-8) < 0.0001):
+                    current_r = a.U_shared.shape[1]
+                    print(f"🫁 Breathing Manifold Triggered! Slicing dead rank {current_r} -> {current_r - 1}")
+                    O_U, O_V = O_Us[i], O_Vs[i]
+                    a.U_shared.data = a.U_shared.data @ O_U
+                    a.V_shared.data = O_V.T @ a.V_shared.data
+                    for k in range(a.liquid_core.num_cores):
+                        a.liquid_core.core_pool.data[k] = O_U.T @ a.liquid_core.core_pool.data[k] @ O_V
+                    a.ema_U.data = a.ema_U.data @ O_U
+                    a.ema_V.data = O_V.T @ a.ema_V.data
+                    if ENABLE_COSO_NULLSPACE: a.streaming_sketch_U.data = a.streaming_sketch_U.data @ O_U
+                    if ENABLE_PACA:
+                        a.ema_fast_U.data = a.ema_fast_U.data @ O_U
+                        a.ema_slow_U.data = a.ema_slow_U.data @ O_U
+                        a.ema_fast_V.data = O_V.T @ a.ema_fast_V.data
+                        a.ema_slow_V.data = O_V.T @ a.ema_slow_V.data
+                    
+                    a.U_shared.data = a.U_shared.data[:, 1:]
+                    a.V_shared.data = a.V_shared.data[1:, :]
+                    a.liquid_core.core_pool.data = a.liquid_core.core_pool.data[:, 1:, 1:]
+                    a.ema_U.data = a.ema_U.data[:, 1:]
+                    a.ema_V.data = a.ema_V.data[1:, :]
+                    if ENABLE_PACA:
+                        a.ema_fast_U.data = a.ema_fast_U.data[:, 1:]
+                        a.ema_slow_U.data = a.ema_slow_U.data[:, 1:]
+                        a.ema_fast_V.data = a.ema_fast_V.data[1:, :]
+                        a.ema_slow_V.data = O_V.T @ a.ema_slow_V.data
+                        a.ema_fast_V.data = a.ema_fast_V.data[1:, :]
+                        a.ema_slow_V.data = a.ema_slow_V.data[1:, :]
+                    if ENABLE_COSO_NULLSPACE:
+                        a.streaming_sketch_U.data = a.streaming_sketch_U.data[:, 1:]
+                        a.ear_initialized = False
+                        a.Q_null_U = torch.zeros(a.out_features, max(1, (a.U_shared.shape[1]) // 2), device=a.U_shared.device)
+                    a.contracted_this_step = True
+                    
+        # --- B. SINGULAR VALUE CALIBRATION (SVC) BUGFIX ---
+        if ENABLE_SVC:
+            cores, core_refs = [], []
+            for a in adapters:
+                for k in range(a.liquid_core.num_cores):
+                    cores.append(a.liquid_core.core_pool[k].data)
+                    core_refs.append((a, k))
+            if cores:
+                U_s, S_s, V_h = torch.linalg.svd(torch.stack(cores), full_matrices=False)
+                svc_lambda = core_refs[0][0].svc_lambda
+                S_s = S_s / (1 + svc_lambda * S_s)
+                reconstructed = U_s @ torch.diag_embed(S_s) @ V_h
+                for idx, (a, k) in enumerate(core_refs):
+                    a.liquid_core.core_pool.data[k] = reconstructed[idx]
+
+def train_cascades_v3(seed=42):
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Set basic global seeds
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     # Print ablation config
     print("=" * 60)
@@ -756,7 +767,7 @@ def train_cascades_v3():
     # D-MoLE: compute layer importance (optional)
     layer_importance = None
     if ENABLE_DMOLE_SELECT:
-        probe_loader = prepare_data(tokenizer, 0)
+        probe_loader = prepare_data(tokenizer, 0, base_seed=seed)
         layer_importance = compute_layer_importance(model, probe_loader, device)
 
     # Inject adapters
@@ -779,7 +790,7 @@ def train_cascades_v3():
         print(f"--- Training CASCADES Task {t} ---")
         print(f"{'=' * 60}")
 
-        dataloader = prepare_data(tokenizer, t)
+        dataloader = prepare_data(tokenizer, t, base_seed=seed)
 
         # Build optimizer: shared subspace + task lambdas + gates + FunLoRA params
         def build_optimizer():
@@ -869,6 +880,14 @@ def train_cascades_v3():
                 optimizer.step()
                 epoch_loss += loss.item()
                 num_batches += 1
+                
+                # Global Batched Operations (Replaces layer-by-layer CUDA bottleneck)
+                if ENABLE_COSO_NULLSPACE and num_batches % 25 == 0:
+                    batched_null_space_extraction(critical_adapters)
+
+                if ENABLE_SVC and num_batches % 50 == 0:
+                    batched_autopoiesis_and_svc(critical_adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_NULLSPACE)
+
                 print(f"    [Ep {ep+1} B {num_batches}] Batch finished.")
 
             avg_loss = epoch_loss / max(num_batches, 1)
@@ -920,7 +939,7 @@ def train_cascades_v3():
         # --- Evaluation ---
         print(f"\n--- Evaluation after Task {t} ---")
         for eval_t in range(t + 1):
-            eval_dataloader = prepare_data(tokenizer, eval_t)
+            eval_dataloader = prepare_data(tokenizer, eval_t, base_seed=seed)
             total_loss = 0
             num_batches = 0
             with torch.no_grad():
@@ -983,4 +1002,9 @@ def train_cascades_v3():
 
 
 if __name__ == "__main__":
-    train_cascades_v3()
+    import argparse
+    parser = argparse.ArgumentParser(description="CASCADES v9 Ecosystem Training")
+    parser.add_argument("--seed", type=int, default=42, help="Global random seed")
+    args = parser.parse_args()
+    
+    train_cascades_v3(seed=args.seed)
