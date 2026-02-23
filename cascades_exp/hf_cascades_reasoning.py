@@ -234,6 +234,8 @@ class CASCADES_v6_Adapter(nn.Module):
         # Quantization noise estimate (updated during training)
         self.quant_noise_std = torch.tensor(1e-3)
         self.step_counter = 0
+        self.contracted_this_step = False # CASCADES v9: Signal for optimizer hook
+
 
     def forward(self, x):
         return self.liquid_core(x, self.V_shared, self.U_shared, getattr(self, 'gate_proj', None))
@@ -284,14 +286,22 @@ class CASCADES_v6_Adapter(nn.Module):
                 self.ear_initialized = True
 
     def full_descent_step(self, lr=0.01):
-        """Unified CASCADES v6 Boundary-less Descent Pipeline"""
+        """Unified CASCADES v9 Ecosystem Descent Pipeline"""
         with torch.no_grad():
             if self.U_shared.grad is None or self.V_shared.grad is None: return
-            self.step_counter += 1
 
             # 1. Pop raw Euclidean gradients immediately to free the autograd graph
             grad_U, self.U_shared.grad = self.U_shared.grad.clone(), None
             grad_V, self.V_shared.grad = self.V_shared.grad.clone(), None
+
+            # === CASCADES v9: MOE INTERFERENCE FIX (RIEMANNIAN FREEZE) ===
+            # Detect if this expert was unrouted (zero gradient energy). 
+            # If so, we bypass EMA decay and Retraction entirely to perfectly 
+            # lock the geometric Stiefel tracking buffers in hibernation.
+            if grad_U.norm() < 1e-8 and grad_V.norm() < 1e-8:
+                return 
+
+            self.step_counter += 1
 
             # 2. Component 3: Streaming PaCA (Temporal Causal Mask)
             # Apply after a small warmup to allow Slow EMA to populate
@@ -413,12 +423,72 @@ class CASCADES_v6_Adapter(nn.Module):
             if ENABLE_COSO_NULLSPACE:
                 self.streaming_sketch_U.copy_(self.streaming_sketch_U @ R_U_inv)
 
-            # 9. Lazy SVC Calibration across all Liquid Cores
+            # 9. Autopoietic Breathing Manifolds & Lazy SVC (CASCADES v9)
             if ENABLE_SVC and self.step_counter % 50 == 0:
-                for k in range(self.liquid_core.num_cores):
-                    U_s, S, V_s = torch.linalg.svd(self.liquid_core.core_pool[k], full_matrices=False)
-                    S = S / (1 + self.svc_lambda * S)
-                    self.liquid_core.core_pool[k].copy_(U_s @ torch.diag(S) @ V_s.T)
+                with torch.no_grad():
+                    # --- A. CONTINUOUS RANK CONTRACTION (EXHALE) ---
+                    current_r = self.U_shared.shape[1]
+                    if current_r > 2: # Enforce absolute structural survival bound
+                        # 1. Evaluate Covariant Structural Energy across all K cores
+                        C_L = sum(c @ c.T for c in self.liquid_core.core_pool)
+                        C_R = sum(c.T @ c for c in self.liquid_core.core_pool)
+                        
+                        # 2. Extract global orthogonal rotation frames
+                        D_U, O_U = torch.linalg.eigh(C_L)
+                        D_V, O_V = torch.linalg.eigh(C_R)
+                        
+                        # 3. Check if the weakest global channel is mathematically dead
+                        if D_U[0] < 1e-5 and D_V[0] < 1e-5:
+                            print(f"🫁 Breathing Manifold Triggered! Slicing dead rank {current_r} -> {current_r - 1}")
+                            
+                            # 4. Exact Isometric Counter-Rotation
+                            self.U_shared.data = self.U_shared.data @ O_U
+                            self.V_shared.data = O_V.T @ self.V_shared.data
+                            
+                            for k in range(self.liquid_core.num_cores):
+                                self.liquid_core.core_pool.data[k] = O_U.T @ self.liquid_core.core_pool.data[k] @ O_V
+                                
+                            self.ema_U.data = self.ema_U.data @ O_U
+                            self.ema_V.data = O_V.T @ self.ema_V.data
+                            if ENABLE_COSO_NULLSPACE: self.streaming_sketch_U.data = self.streaming_sketch_U.data @ O_U
+                            
+                            if ENABLE_PACA:
+                                self.ema_fast_U.data = self.ema_fast_U.data @ O_U
+                                self.ema_slow_U.data = self.ema_slow_U.data @ O_U
+                                self.ema_fast_V.data = O_V.T @ self.ema_fast_V.data
+                                self.ema_slow_V.data = O_V.T @ self.ema_slow_V.data
+                                
+                            # 5. Amputation: Exhale VRAM by slicing off index 0 natively
+                            self.U_shared.data = self.U_shared.data[:, 1:]
+                            self.V_shared.data = self.V_shared.data[1:, :]
+                            self.liquid_core.core_pool.data = self.liquid_core.core_pool.data[:, 1:, 1:]
+                            
+                            self.ema_U.data = self.ema_U.data[:, 1:]
+                            self.ema_V.data = self.ema_V.data[1:, :]
+                            
+                            if ENABLE_PACA:
+                                self.ema_fast_U.data = self.ema_fast_U.data[:, 1:]
+                                self.ema_slow_U.data = self.ema_slow_U.data[:, 1:]
+                                self.ema_fast_V.data = self.ema_fast_V.data[1:, :]
+                                self.ema_slow_V.data = O_V.T @ self.ema_slow_V.data # Slicing off first row for transposed V
+                                self.ema_fast_V.data = self.ema_fast_V.data[1:, :]
+                                self.ema_slow_V.data = self.ema_slow_V.data[1:, :]
+                                
+                            if ENABLE_COSO_NULLSPACE:
+                                self.streaming_sketch_U.data = self.streaming_sketch_U.data[:, 1:]
+                                self.ear_initialized = False # Force Q_null to rebuild
+                                self.Q_null_U = torch.zeros(self.out_features, max(1, (self.U_shared.shape[1]) // 2), device=self.U_shared.device)
+                                
+                            self.contracted_this_step = True # Signal outer optimizer
+
+                    # --- B. SINGULAR VALUE CALIBRATION (SVC) BUGFIX ---
+                    for k in range(self.liquid_core.num_cores):
+                        # V9 Bugfix: PyTorch SVD natively returns Vh (conjugate transpose). 
+                        # Reconstructing via V_h prevents the erroneous double-transpose that corrupted v8 geometry.
+                        U_s, S_s, V_h = torch.linalg.svd(self.liquid_core.core_pool[k].data, full_matrices=False)
+                        S_s = S_s / (1 + self.svc_lambda * S_s)
+                        self.liquid_core.core_pool.data[k] = U_s @ torch.diag(S_s) @ V_h
+
 
 
 # --- Adaptive Linear Wrapper ---
@@ -455,12 +525,46 @@ class CASCADES_v6_Linear(nn.Module):
         return True
         
     def demote(self):
-        """Phase-Transition leaps: Demotes a dormant Resonant core back down 
-           to a rank-1 FunLoRA to free up compute bounds."""
+        """Phase-Transition leaps: Distills the dormant Resonant core back down 
+           to a rank-1 FunLoRA via exact Stiefel-lifted SVD to prevent forgetting."""
         if not self.is_critical: return False
         
+        # --- CASCADES v9: Dormant Core Distillation (The Sleep Cycle) ---
+        with torch.no_grad():
+            # 1. Structural Consensus: Expected K-Core behavior (r x r)
+            mean_core = self.adapter.liquid_core.core_pool.mean(dim=0)
+            
+            # 2. Latent Isometry SVD 
+            U_c, S_c, Vh_c = torch.linalg.svd(mean_core, full_matrices=False)
+            
+            # 3. Extract Top Principal Component
+            sigma_1 = S_c[0]
+            u_1 = U_c[:, 0:1]    # (r, 1) preserves 2D shape for exact broadcasting
+            vh_1 = Vh_c[0:1, :]  # (1, r)
+            
+            # 4. Push-forward to ambient coordinate space
+            a_ambient = self.adapter.U_shared @ u_1  # (d_out, 1)
+            b_ambient = vh_1 @ self.adapter.V_shared # (1, d_in)
+            
+            # 5. Non-Linear Gain Compensation (FunLoRA f'(0) = 2.25)
+            scale = math.sqrt(sigma_1.item() / 2.25)
+            
+            # (Optional) Fold the Gate state directly into the distilled weights
+            if getattr(self.adapter, 'gate_proj', None) is not None:
+                gate_in = torch.cat([self.adapter.U_shared.mean(0), self.adapter.V_shared.mean(1)])
+                scale *= math.sqrt(torch.sigmoid(self.adapter.gate_proj(gate_in)).item())
+
+            a_distilled = a_ambient * scale
+            b_distilled = b_ambient * scale
+
         self.is_critical = False
         new_adapter = FunLoRA_Adapter_Optimized(self.in_features, self.out_features)
+        
+        # 6. Safely inject the distilled memories
+        with torch.no_grad():
+            new_adapter.a.copy_(a_distilled)
+            new_adapter.b.copy_(b_distilled)
+        
         new_adapter = new_adapter.to(self.adapter.U_shared.device)
         self.adapter = new_adapter
         return True
@@ -747,13 +851,17 @@ def train_cascades_v3():
                 for a in critical_adapters:
                      a.full_descent_step(lr=0.01)
                      
-                     # V8: Optimizer State Padding Hook for Autopoiesis
-                     # If the core_pool expanded, its shape will be larger than the optimizer's states.
+                     # V9: Bi-Directional Optimizer State Elasticity Hook 
                      param = a.liquid_core.core_pool
-                     if param in optimizer.state:
+                     if getattr(a, 'contracted_this_step', False):
+                         if param in optimizer.state:
+                             # Basis was globally rotated & sliced. Flush dead momentum.
+                             optimizer.state[param] = {}
+                         a.contracted_this_step = False
+                     elif param in optimizer.state:
                          state = optimizer.state[param]
                          if 'exp_avg' in state and state['exp_avg'].shape != param.shape:
-                             # The core pad was (0,1,0,1) for the (rank, rank) matrices
+                             # V8 Expansion: Zero-pad the new ranks (+1)
                              state['exp_avg'] = F.pad(state['exp_avg'], (0, 1, 0, 1), "constant", 0.0)
                              state['exp_avg_sq'] = F.pad(state['exp_avg_sq'], (0, 1, 0, 1), "constant", 0.0)
 
