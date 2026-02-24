@@ -327,14 +327,11 @@ class CASCADES_v6_Adapter(nn.Module):
                 # NOTE: Amortized null-space extraction is now batched globally per epoch.
 
                 if self.ear_initialized:
-                    occ_U = self.Q_null_U @ (self.Q_null_U.T @ tangent_U)
-                    free_U = tangent_U - occ_U
-                    
                     n_orig, n_free = tangent_U.norm(), free_U.norm()
+                    n_occ = (tangent_U - free_U).norm()
                     
                     # === V8 AUTOPOIESIS (DYNAMIC RANK EXPANSION) ===
-                    # If the null-space free energy is suffocating learning relative to historical norm
-                    if n_free < 0.10 * self.ema_grad_norm and self.U_shared.shape[1] < 16: # Max rank safety cap
+                    if n_free / (n_occ + n_free + 1e-8) < 0.10 and self.U_shared.shape[1] < 32: 
                         with torch.no_grad():
                             print(f"🧬 Autopoiesis Triggered! Expanding Rank {self.U_shared.shape[1]} -> {self.U_shared.shape[1] + 1}")
                             
@@ -528,7 +525,7 @@ def compute_layer_importance(model, dataloader, device, threshold=0.15):
         for batch in dataloader:
             if batches_processed >= max_batches:
                 break
-            input_ids, attention_mask = batch
+            input_ids, attention_mask, labels = batch
             input_ids, attention_mask = input_ids.to(device), attention_mask.to(device)
             model(input_ids=input_ids, attention_mask=attention_mask)
             batches_processed += 1
@@ -603,26 +600,68 @@ def inject_cascades_v3(model, rank=8, target_modules=None, layer_importance=None
 
 
 def prepare_data(tokenizer, task_number, base_seed=42):
-    """Loads domain-specific JSONL prompts for reasoning adaptation."""
+    """Loads domain-specific JSONL prompts mapped for Llama-3-8B CoT reasoning adaptation."""
     import os
+    import pandas as pd
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
     torch.manual_seed(base_seed + task_number)
 
+    # Route to the distilled explicit CoT files
     files = [
-        "cascades_exp/task0_logic.jsonl",
-        "cascades_exp/task1_decomp.jsonl",
-        "cascades_exp/task2_action.jsonl"
+        "cascades_exp/task0_logic_cot.jsonl",
+        "cascades_exp/task1_decomp_cot.jsonl",
+        "cascades_exp/task2_action_cot.jsonl"
     ]
     file_path = files[task_number % len(files)]
 
     if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Missing dataset: {file_path}. Please generate it using the prompt and save it here.")
+        raise FileNotFoundError(f"Missing dataset: {file_path}. Please run format_cot_datasets.py first.")
 
     df = pd.read_json(file_path, lines=True)
-    # Concatenate prompt and response to train causal LM
-    prompts = [f"USER: {p}\nMODEL: {r}" for p, r in zip(df['prompt'], df['response'])]
-
-    encodings = tokenizer(prompts, return_tensors="pt", truncation=True, padding=True, max_length=256)
-    dataset = torch.utils.data.TensorDataset(encodings.input_ids, encodings.attention_mask)
+    input_ids_list, attention_masks_list, labels_list = [], [], []
+    
+    # Context window raised to safely envelop lengthier step-by-step traces
+    max_length = 1024 
+    
+    for p, r in zip(df['prompt'], df['response']):
+        # Llama-3 Native Chat Templating format 
+        messages = [{"role": "user", "content": p}]
+        prompt_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        response_text = r + tokenizer.eos_token
+        
+        prompt_tokens = tokenizer(prompt_text, add_special_tokens=False).input_ids
+        response_tokens = tokenizer(response_text, add_special_tokens=False).input_ids
+        
+        input_ids = prompt_tokens + response_tokens
+        if len(input_ids) > max_length:
+            input_ids = input_ids[:max_length]
+            
+        attention_mask = [1] * len(input_ids)
+        
+        # CRITICAL REWRITE: Strict Autoregressive Masking
+        # By masking the prompt generation bounds with -100, the Cross-Entropy loss 
+        # is mathematically isolated to ONLY the logic execution limits and final answer.
+        labels = [-100] * len(prompt_tokens) + response_tokens
+        if len(labels) > max_length:
+            labels = labels[:max_length]
+            
+        padding_length = max_length - len(input_ids)
+        if padding_length > 0:
+            input_ids += [tokenizer.pad_token_id] * padding_length
+            attention_mask += [0] * padding_length
+            labels += [-100] * padding_length
+            
+        input_ids_list.append(input_ids)
+        attention_masks_list.append(attention_mask)
+        labels_list.append(labels)
+        
+    dataset = TensorDataset(
+        torch.tensor(input_ids_list), 
+        torch.tensor(attention_masks_list), 
+        torch.tensor(labels_list)
+    )
     return DataLoader(dataset, batch_size=1, shuffle=True)
 
 
@@ -641,37 +680,46 @@ def estimate_quant_noise(model):
 
 def batched_null_space_extraction(adapters):
     if not adapters: return
+    # Group adapters by their current rank to avoid ragged tensors/padding eigh issues
+    by_rank = {}
+    for a in adapters:
+        r = a.U_shared.shape[1]
+        if r not in by_rank: by_rank[r] = []
+        by_rank[r].append(a)
+
     with torch.no_grad():
-        C_Us = torch.stack([a.streaming_sketch_U.T @ a.streaming_sketch_U for a in adapters])
-        _, V_eigs = torch.linalg.eigh(C_Us)
-        for i, a in enumerate(adapters):
-            k = a.Q_null_U.shape[1]
-            occ_ambient_U = a.streaming_sketch_U @ V_eigs[i, :, -k:]
-            if occ_ambient_U.norm() > 1e-8:
-                Q_U, _ = torch.linalg.qr(occ_ambient_U)
-                a.Q_null_U.copy_(Q_U)
-                a.ear_initialized = True
+        for r, rank_adapters in by_rank.items():
+            C_Us = torch.stack([a.streaming_sketch_U.T @ a.streaming_sketch_U for a in rank_adapters])
+            _, V_eigs = torch.linalg.eigh(C_Us)
+            for i, a in enumerate(rank_adapters):
+                k = a.Q_null_U.shape[1]
+                occ_ambient_U = a.streaming_sketch_U @ V_eigs[i, :, -k:]
+                if occ_ambient_U.norm() > 1e-8:
+                    Q_U, _ = torch.linalg.qr(occ_ambient_U)
+                    a.Q_null_U.copy_(Q_U)
+                    a.ear_initialized = True
 
 def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_NULLSPACE):
     if not adapters: return
     with torch.no_grad():
         # --- A. CONTINUOUS RANK CONTRACTION (EXHALE) ---
-        C_Ls, C_Rs, exhaling_adapters = [], [], []
+        by_rank = {}
         for a in adapters:
-            current_r = a.U_shared.shape[1]
-            if current_r > 2:
-                C_L = sum(c @ c.T for c in a.liquid_core.core_pool)
-                C_R = sum(c.T @ c for c in a.liquid_core.core_pool)
-                C_Ls.append(C_L)
-                C_Rs.append(C_R)
-                exhaling_adapters.append(a)
-                
-        if exhaling_adapters:
-            # Batched Eigh
-            D_Us, O_Us = torch.linalg.eigh(torch.stack(C_Ls))
-            D_Vs, O_Vs = torch.linalg.eigh(torch.stack(C_Rs))
+            r = a.U_shared.shape[1]
+            if r > 2:
+                if r not in by_rank: by_rank[r] = []
+                by_rank[r].append(a)
+
+        for r, rank_adapters in by_rank.items():
+            C_Ls = torch.stack([sum(c @ c.T for c in a.liquid_core.core_pool) for a in rank_adapters])
+            C_Rs = torch.stack([sum(c.T @ c for c in a.liquid_core.core_pool) for a in rank_adapters])
             
-            for i, a in enumerate(exhaling_adapters):
+            # Batched Eigh
+            D_Us, O_Us = torch.linalg.eigh(C_Ls)
+            D_Vs, O_Vs = torch.linalg.eigh(C_Rs)
+            
+            for i, a in enumerate(rank_adapters):
+                # Relative Variance Bound check
                 if (D_Us[i, 0] / (D_Us[i].sum() + 1e-8) < 0.0001) and (D_Vs[i, 0] / (D_Vs[i].sum() + 1e-8) < 0.0001):
                     current_r = a.U_shared.shape[1]
                     print(f"🫁 Breathing Manifold Triggered! Slicing dead rank {current_r} -> {current_r - 1}")
@@ -698,7 +746,7 @@ def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_N
                         a.ema_fast_U.data = a.ema_fast_U.data[:, 1:]
                         a.ema_slow_U.data = a.ema_slow_U.data[:, 1:]
                         a.ema_fast_V.data = a.ema_fast_V.data[1:, :]
-                        a.ema_slow_V.data = O_V.T @ a.ema_slow_V.data
+                        a.ema_slow_V.data = O_V.T @ a.ema_slow_V.data # Slicing after counter-rotation
                         a.ema_fast_V.data = a.ema_fast_V.data[1:, :]
                         a.ema_slow_V.data = a.ema_slow_V.data[1:, :]
                     if ENABLE_COSO_NULLSPACE:
@@ -709,20 +757,28 @@ def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_N
                     
         # --- B. SINGULAR VALUE CALIBRATION (SVC) BUGFIX ---
         if ENABLE_SVC:
-            cores, core_refs = [], []
+            # Group SVC by rank as well because SVD of core_pool expects uniform rank
+            svc_by_rank = {}
             for a in adapters:
-                for k in range(a.liquid_core.num_cores):
-                    cores.append(a.liquid_core.core_pool[k].data)
-                    core_refs.append((a, k))
-            if cores:
-                U_s, S_s, V_h = torch.linalg.svd(torch.stack(cores), full_matrices=False)
-                svc_lambda = core_refs[0][0].svc_lambda
-                S_s = S_s / (1 + svc_lambda * S_s)
-                reconstructed = U_s @ torch.diag_embed(S_s) @ V_h
-                for idx, (a, k) in enumerate(core_refs):
-                    a.liquid_core.core_pool.data[k] = reconstructed[idx]
+                r = a.U_shared.shape[1]
+                if r not in svc_by_rank: svc_by_rank[r] = []
+                svc_by_rank[r].append(a)
 
-def train_cascades_v3(seed=42):
+            for r, rank_adapters in svc_by_rank.items():
+                cores, core_refs = [], []
+                for a in rank_adapters:
+                    for k in range(a.liquid_core.num_cores):
+                        cores.append(a.liquid_core.core_pool[k].data)
+                        core_refs.append((a, k))
+                if cores:
+                    U_s, S_s, V_h = torch.linalg.svd(torch.stack(cores), full_matrices=False)
+                    svc_lambda = core_refs[0][0].svc_lambda
+                    S_s = S_s / (1 + svc_lambda * S_s)
+                    reconstructed = U_s @ torch.diag_embed(S_s) @ V_h
+                    for idx, (a, k) in enumerate(core_refs):
+                        a.liquid_core.core_pool.data[k] = reconstructed[idx]
+
+def train_cascades_v3(seed=42, dmole_threshold=0.22):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Set basic global seeds
@@ -745,13 +801,16 @@ def train_cascades_v3(seed=42):
     print(f"  Device: {device}")
     print("=" * 60)
 
+    # PERFECT NF4 CONFIGURATION FOR 8B UNDER 8GB VRAM
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True
+        bnb_4bit_compute_dtype=torch.bfloat16,   # Required for exact Riemannian tracking stability
+        bnb_4bit_use_double_quant=True,          # Essential to crush memory footprint
+        bnb_4bit_quant_type="nf4"
     )
 
-    model_id = "p-e-w/Qwen3-4B-Instruct-2507-heretic"
+    # Swap Base Model Engine to Llama-3-8B
+    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -768,7 +827,7 @@ def train_cascades_v3(seed=42):
     layer_importance = None
     if ENABLE_DMOLE_SELECT:
         probe_loader = prepare_data(tokenizer, 0, base_seed=seed)
-        layer_importance = compute_layer_importance(model, probe_loader, device)
+        layer_importance = compute_layer_importance(model, probe_loader, device, threshold=dmole_threshold)
 
     # Inject adapters
     critical_adapters, funlora_adapters = inject_cascades_v3(
@@ -798,21 +857,30 @@ def train_cascades_v3(seed=42):
             assigned_param_ids = set()
             
             # Recalculate which adapters are currently critical/funlora after potential dynamic D-MoLE swaps
-            current_critical = [m.adapter for m in model.modules() if isinstance(m, CASCADES_v6_Linear) and m.is_critical]
-            current_funlora  = [m.adapter for m in model.modules() if isinstance(m, CASCADES_v6_Linear) and not m.is_critical]
+            current_critical = list({m.adapter for m in model.modules() if isinstance(m, CASCADES_v6_Linear) and m.is_critical})
+            current_funlora  = list({m.adapter for m in model.modules() if isinstance(m, CASCADES_v6_Linear) and not m.is_critical})
 
-            liquid_core_params = [p for a in current_critical for p in a.liquid_core.parameters()]
+            def unique_params(p_list):
+                seen = set()
+                res = []
+                for p in p_list:
+                    if id(p) not in seen and id(p) not in assigned_param_ids:
+                        seen.add(id(p))
+                        res.append(p)
+                return res
+
+            liquid_core_params = unique_params([p for a in current_critical for p in a.liquid_core.parameters()])
             if liquid_core_params:
                 param_groups.append({'params': liquid_core_params, 'lr': 5e-3})
                 assigned_param_ids.update(id(p) for p in liquid_core_params)
 
             if ENABLE_GAINLORA_GATE:
-                gate_params = [p for a in current_critical if hasattr(a, 'gate_proj') for p in a.gate_proj.parameters()]
+                gate_params = unique_params([p for a in current_critical if hasattr(a, 'gate_proj') for p in a.gate_proj.parameters()])
                 if gate_params:
                     param_groups.append({'params': gate_params, 'lr': 1e-3})
                     assigned_param_ids.update(id(p) for p in gate_params)
 
-            funlora_params = [p for a in current_funlora for p in a.parameters()]
+            funlora_params = unique_params([p for a in current_funlora for p in a.parameters()])
             if funlora_params:
                 param_groups.append({'params': funlora_params, 'lr': 1e-4})
                 assigned_param_ids.update(id(p) for p in funlora_params)
@@ -821,15 +889,15 @@ def train_cascades_v3(seed=42):
             for layer in current_critical:
                 stiefel_bases.extend([id(layer.U_shared), id(layer.V_shared)])
                 
-            fallback_params = [
+            fallback_params = unique_params([
                 p for p in model.parameters() 
                 if p.requires_grad 
                 and id(p) not in stiefel_bases 
-                and id(p) not in assigned_param_ids
-            ]
+            ])
             
             if fallback_params:
                 param_groups.append({"params": fallback_params, "lr": 5e-4})
+                assigned_param_ids.update(id(p) for p in fallback_params)
                 
             return optim.Adam(param_groups), current_critical
             
@@ -842,12 +910,12 @@ def train_cascades_v3(seed=42):
             num_batches = 0
             for batch in dataloader:
                 print(f"    [Ep {ep+1} B {num_batches+1}] Starting batch...")
-                input_ids, attention_mask = batch
-                input_ids, attention_mask = input_ids.to(device), attention_mask.to(device)
+                input_ids, attention_mask, labels = batch
+                input_ids, attention_mask, labels = input_ids.to(device), attention_mask.to(device), labels.to(device)
 
                 print(f"    [Ep {ep+1} B {num_batches+1}] Forward pass...")
                 optimizer.zero_grad()
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                 loss = outputs.loss
                 print(f"    [Ep {ep+1} B {num_batches+1}] Backward pass (loss={loss.item():.4f})...")
                 loss.backward()
@@ -888,6 +956,12 @@ def train_cascades_v3(seed=42):
                 if ENABLE_SVC and num_batches % 50 == 0:
                     batched_autopoiesis_and_svc(critical_adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_NULLSPACE)
 
+                if ep == 0 and num_batches == 1:
+                    mem_alloc = torch.cuda.max_memory_allocated(device) / (1024**3)
+                    print(f"    [MEMORY HOOK] Max VRAM Allocated after first batch: {mem_alloc:.2f} GB")
+                    if mem_alloc > 7.8:
+                        print("    [WARNING] VRAM spike above 7.8GB detected! OOM risk is high.")
+
                 print(f"    [Ep {ep+1} B {num_batches}] Batch finished.")
 
             avg_loss = epoch_loss / max(num_batches, 1)
@@ -903,7 +977,7 @@ def train_cascades_v3(seed=42):
             current_wrapper_modules = {name: m for name, m in model.named_modules() if isinstance(m, CASCADES_v6_Linear)}
             
             # Re-evaluate layer variance to map topological activations dynamically
-            importance_scores = compute_layer_importance(model, dataloader, device, threshold=0.15)
+            importance_scores = compute_layer_importance(model, dataloader, device, threshold=dmole_threshold)
             
             promoted, demoted = 0, 0
             if importance_scores:
@@ -944,9 +1018,11 @@ def train_cascades_v3(seed=42):
             num_batches = 0
             with torch.no_grad():
                 for batch in eval_dataloader:
-                    input_ids, attention_mask = batch
+                    input_ids, attention_mask, labels = batch
                     input_ids = input_ids.to(device)
-                    out = model(input_ids=input_ids, labels=input_ids)
+                    attention_mask = attention_mask.to(device)
+                    labels = labels.to(device)
+                    out = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                     total_loss += out.loss.item()
                     num_batches += 1
 
@@ -1005,6 +1081,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="CASCADES v9 Ecosystem Training")
     parser.add_argument("--seed", type=int, default=42, help="Global random seed")
+    parser.add_argument("--dmole_threshold", type=float, default=0.22, help="Activation selection threshold for ResonantCore injection")
     args = parser.parse_args()
     
-    train_cascades_v3(seed=args.seed)
+    train_cascades_v3(seed=args.seed, dmole_threshold=args.dmole_threshold)

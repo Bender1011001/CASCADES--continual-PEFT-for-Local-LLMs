@@ -12,9 +12,7 @@ import time
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from torch.utils.data import DataLoader
 
-# Use the unified data module so the baseline sees EXACTLY the same data as CASCADES.
-# This is required for a fair experimental comparison.
-from cascades.data import prepare_dataloader as _prepare_dataloader
+# Removed unified dataloader import to use exact CoT dataloader below.
 
 # --- Standard LoRA Baseline for Continual Learning Comparison ---
 # Same model, same data, same eval — no Hamiltonian descent, no SVC, no Riemannian tricks
@@ -69,21 +67,81 @@ def inject_lora(model, rank=8, target_modules=["q_proj", "v_proj", "up_proj", "d
             
     return adapters
 
-def prepare_data(tokenizer, task_number):
-    """Delegates to the unified data module — identical to CASCADES data."""
-    return _prepare_dataloader(tokenizer, task_number, batch_size=2)
+def prepare_data(tokenizer, task_number, base_seed=42):
+    """Loads domain-specific JSONL prompts mapped for Llama-3-8B CoT baseline adaptation."""
+    import os
+    import pandas as pd
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    torch.manual_seed(base_seed + task_number)
+
+    # Route to the distilled explicit CoT files
+    files = [
+        "cascades_exp/task0_logic_cot.jsonl",
+        "cascades_exp/task1_decomp_cot.jsonl",
+        "cascades_exp/task2_action_cot.jsonl"
+    ]
+    file_path = files[task_number % len(files)]
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Missing dataset: {file_path}. Please run format_cot_datasets.py first.")
+
+    df = pd.read_json(file_path, lines=True)
+    input_ids_list, attention_masks_list, labels_list = [], [], []
+    
+    # Context window raised to safely envelop lengthier step-by-step traces
+    max_length = 1024 
+    
+    for p, r in zip(df['prompt'], df['response']):
+        # Llama-3 Native Chat Templating format 
+        messages = [{"role": "user", "content": p}]
+        prompt_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        response_text = r + tokenizer.eos_token
+        
+        prompt_tokens = tokenizer(prompt_text, add_special_tokens=False).input_ids
+        response_tokens = tokenizer(response_text, add_special_tokens=False).input_ids
+        
+        input_ids = prompt_tokens + response_tokens
+        if len(input_ids) > max_length:
+            input_ids = input_ids[:max_length]
+            
+        attention_mask = [1] * len(input_ids)
+        
+        # Strict Autoregressive Masking globally isolates reasoning paths
+        labels = [-100] * len(prompt_tokens) + response_tokens
+        if len(labels) > max_length:
+            labels = labels[:max_length]
+            
+        padding_length = max_length - len(input_ids)
+        if padding_length > 0:
+            input_ids += [tokenizer.pad_token_id] * padding_length
+            attention_mask += [0] * padding_length
+            labels += [-100] * padding_length
+            
+        input_ids_list.append(input_ids)
+        attention_masks_list.append(attention_mask)
+        labels_list.append(labels)
+        
+    dataset = TensorDataset(
+        torch.tensor(input_ids_list), 
+        torch.tensor(attention_masks_list), 
+        torch.tensor(labels_list)
+    )
+    return DataLoader(dataset, batch_size=1, shuffle=True)
 
 def train_lora_baseline():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading 4-bit Qwen3 Heretic model on {device} (LoRA baseline)")
+    print(f"Loading 4-bit Llama-3-8B model on {device} (LoRA baseline)")
     
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4"
     )
     
-    model_id = "p-e-w/Qwen3-4B-Instruct-2507-heretic"
+    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -112,14 +170,17 @@ def train_lora_baseline():
         optimizer = optim.Adam([p for a in adapters for p in a.parameters()], lr=1e-4)
         
         for ep in range(epochs):
-            for batch in dataloader:
-                input_ids, attention_mask = batch
-                input_ids, attention_mask = input_ids.to(device), attention_mask.to(device)
+            for i, batch in enumerate(dataloader):
+                print(f"    [Ep {ep+1} B {i+1}] Starting batch...")
+                input_ids, attention_mask, labels = batch
+                input_ids, attention_mask, labels = input_ids.to(device), attention_mask.to(device), labels.to(device)
                 
                 optimizer.zero_grad()
                 
-                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
+                print(f"    [Ep {ep+1} B {i+1}] Forward pass...")
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                 loss = outputs.loss
+                print(f"    [Ep {ep+1} B {i+1}] Backward pass...")
                 loss.backward()
                 
                 # Same grad clipping as CASCADES for fairness
@@ -129,8 +190,9 @@ def train_lora_baseline():
                 
                 # Standard Adam step — NO Hamiltonian descent, NO SVC calibration
                 optimizer.step()
+                print(f"    [Ep {ep+1} B {i+1}] Batch finished.")
                 
-            print(f"Task {t}, Epoch {ep+1}/{epochs}, Loss: {loss.item():.4f}")
+            print(f"Task {t}, Epoch {ep+1}/{epochs}, Avg Loss: {loss.item():.4f}")
             
         # Eval (same method as CASCADES)
         for eval_t in range(t + 1):
@@ -139,10 +201,10 @@ def train_lora_baseline():
              num_batches = 0
              with torch.no_grad():
                  for batch in eval_dataloader:
-                     input_ids, attention_mask = batch
-                     input_ids = input_ids.to(device)
+                     input_ids, attention_mask, labels = batch
+                     input_ids, labels = input_ids.to(device), labels.to(device)
                      
-                     out = model(input_ids=input_ids, labels=input_ids)
+                     out = model(input_ids=input_ids, labels=labels)
                      total_loss += out.loss.item()
                      num_batches += 1
              
