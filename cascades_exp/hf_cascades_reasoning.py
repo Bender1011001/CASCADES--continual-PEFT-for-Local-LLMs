@@ -327,6 +327,9 @@ class CASCADES_v6_Adapter(nn.Module):
                 # NOTE: Amortized null-space extraction is now batched globally per epoch.
 
                 if self.ear_initialized:
+                    # [FIX 1] Explicitly generate free_U before norm evaluations
+                    free_U = cllora_gradient_reassign(tangent_U, self.Q_null_U)
+                    
                     n_orig, n_free = tangent_U.norm(), free_U.norm()
                     n_occ = (tangent_U - free_U).norm()
                     
@@ -379,36 +382,41 @@ class CASCADES_v6_Adapter(nn.Module):
                     sym_free_U = 0.5 * (self.U_shared.T @ tangent_U + tangent_U.T @ self.U_shared)
                     tangent_U = tangent_U - self.U_shared @ sym_free_U
 
+            # [FIX 2] GQA Asymmetry requires Dimension-Calibrated Learning Rates
+            # Anchors the ambient step magnitude uniformly to the stable 4B baseline (d_ref=2560)
+            lr_U = lr * math.sqrt(2560.0 / self.U_shared.shape[0])
+            lr_V = lr * math.sqrt(2560.0 / self.V_shared.shape[1])
+
             # 7. QR Retraction
-            Q_U, R_U = torch.linalg.qr(self.U_shared - lr * tangent_U)
+            Q_U, R_U = torch.linalg.qr(self.U_shared - lr_U * tangent_U)
             self.U_shared.copy_(Q_U)
             
-            Q_V, R_V = torch.linalg.qr((self.V_shared - lr * tangent_V).T)
+            Q_V, R_V = torch.linalg.qr((self.V_shared - lr_V * tangent_V).T)
             self.V_shared.copy_(Q_V.T)
             
             # 8. SYSTEM-WIDE BASIS COUNTER-ROTATION (The Ripple Fix)
-            # Use pseudo-inverse to prevent CUDA deadlocks if R is ill-conditioned (which happens in baseline ablation)
             R_U_inv = torch.linalg.pinv(R_U)
-            R_V_inv = torch.linalg.pinv(R_V)
 
             # RULE 2: Contravariant Cores (Mix by R)
             for k in range(self.liquid_core.num_cores):
                 self.liquid_core.core_pool[k].copy_(R_U @ self.liquid_core.core_pool[k] @ R_V.T)
                 
-            # RULE 1: Covariant Ambient Buffers (Mix by R_inv)
-            self.ema_U.copy_(self.ema_U @ R_U_inv)
-            self.ema_V.copy_(R_V_inv @ self.ema_V) # Left side for transposed V space
+            # [FIX 3] The Transpose Parity Bug
+            # Covariant buffers (Euclidean gradients) MUST geometrically mix by R^T and R,
+            # NOT by R^{-1}. R_inv < 1 was exponentially crushing momentum trackers.
+            self.ema_U.copy_(self.ema_U @ R_U.T)
+            self.ema_V.copy_(R_V @ self.ema_V) # Left side for transposed V space
             
             if ENABLE_PACA:
-                self.ema_fast_U.copy_(self.ema_fast_U @ R_U_inv)
-                self.ema_slow_U.copy_(self.ema_slow_U @ R_U_inv)
-                self.ema_fast_V.copy_(R_V_inv @ self.ema_fast_V)
-                self.ema_slow_V.copy_(R_V_inv @ self.ema_slow_V)
+                self.ema_fast_U.copy_(self.ema_fast_U @ R_U.T)
+                self.ema_slow_U.copy_(self.ema_slow_U @ R_U.T)
+                
+                self.ema_fast_V.copy_(R_V @ self.ema_fast_V)
+                self.ema_slow_V.copy_(R_V @ self.ema_slow_V)
                 
             if ENABLE_COSO_NULLSPACE:
+                # Tangent vectors correctly transform contravariantly via R^-1
                 self.streaming_sketch_U.copy_(self.streaming_sketch_U @ R_U_inv)
-            
-            # NOTE: Autopoietic Contraction and SVC are now batched globally for efficiency.
 
 
 
@@ -647,22 +655,22 @@ def prepare_data(tokenizer, task_number, base_seed=42):
         if len(labels) > max_length:
             labels = labels[:max_length]
             
-        padding_length = max_length - len(input_ids)
-        if padding_length > 0:
-            input_ids += [tokenizer.pad_token_id] * padding_length
-            attention_mask += [0] * padding_length
-            labels += [-100] * padding_length
-            
+        # Removed unconditional padding to max_length to prevent massive activation memory
         input_ids_list.append(input_ids)
         attention_masks_list.append(attention_mask)
         labels_list.append(labels)
         
-    dataset = TensorDataset(
-        torch.tensor(input_ids_list), 
-        torch.tensor(attention_masks_list), 
-        torch.tensor(labels_list)
-    )
-    return DataLoader(dataset, batch_size=1, shuffle=True)
+    class DynamicSeqDataset(torch.utils.data.Dataset):
+        def __init__(self, ids, masks, lbls):
+            self.ids, self.masks, self.labels = ids, masks, lbls
+        def __len__(self): return len(self.ids)
+        def __getitem__(self, idx): return self.ids[idx], self.masks[idx], self.labels[idx]
+        
+    def collate_fn(batch):
+        return torch.tensor([batch[0][0]]), torch.tensor([batch[0][1]]), torch.tensor([batch[0][2]])
+        
+    dataset = DynamicSeqDataset(input_ids_list, attention_masks_list, labels_list)
+    return DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=collate_fn)
 
 
 def estimate_quant_noise(model):
@@ -778,7 +786,7 @@ def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_N
                     for idx, (a, k) in enumerate(core_refs):
                         a.liquid_core.core_pool.data[k] = reconstructed[idx]
 
-def train_cascades_v3(seed=42, dmole_threshold=0.22):
+def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-Instruct-2507-heretic", output_prefix="cascades_v9", lr_liquid=5e-3, lr_gate=1e-3, lr_funlora=1e-4, epochs=3):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Set basic global seeds
@@ -809,8 +817,8 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22):
         bnb_4bit_quant_type="nf4"
     )
 
-    # Swap Base Model Engine to Llama-3-8B
-    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    # Load Base Model Engine
+    print(f"Base Model: {model_id}")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -818,6 +826,11 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22):
     model = AutoModelForCausalLM.from_pretrained(
         model_id, quantization_config=bnb_config, device_map="auto"
     )
+
+    from peft import prepare_model_for_kbit_training
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    model.config.use_cache = False  # Required when gradient checkpointing is enabled
 
     # Estimate quantization noise floor for DEAL filter
     quant_noise = estimate_quant_noise(model)
@@ -840,7 +853,7 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22):
         a.quant_noise_std.fill_(quant_noise)
 
     num_tasks = 3
-    epochs = 3
+    # Use the passed-in epochs value
     accuracy_matrix = np.zeros((num_tasks, num_tasks))
     start_time = time.time()
 
@@ -871,18 +884,18 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22):
 
             liquid_core_params = unique_params([p for a in current_critical for p in a.liquid_core.parameters()])
             if liquid_core_params:
-                param_groups.append({'params': liquid_core_params, 'lr': 5e-3})
+                param_groups.append({'params': liquid_core_params, 'lr': lr_liquid})
                 assigned_param_ids.update(id(p) for p in liquid_core_params)
 
             if ENABLE_GAINLORA_GATE:
                 gate_params = unique_params([p for a in current_critical if hasattr(a, 'gate_proj') for p in a.gate_proj.parameters()])
                 if gate_params:
-                    param_groups.append({'params': gate_params, 'lr': 1e-3})
+                    param_groups.append({'params': gate_params, 'lr': lr_gate})
                     assigned_param_ids.update(id(p) for p in gate_params)
 
             funlora_params = unique_params([p for a in current_funlora for p in a.parameters()])
             if funlora_params:
-                param_groups.append({'params': funlora_params, 'lr': 1e-4})
+                param_groups.append({'params': funlora_params, 'lr': lr_funlora})
                 assigned_param_ids.update(id(p) for p in funlora_params)
 
             stiefel_bases = []
@@ -1064,12 +1077,13 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22):
     df = pd.DataFrame(accuracy_matrix,
                       columns=[f"Eval_T{i}" for i in range(num_tasks)],
                       index=[f"Train_T{i}" for i in range(num_tasks)])
-    df.to_csv("cascades_reasoning_results.csv")
-    print("\nResults saved to cascades_reasoning_results.csv")
+    results_csv = f"{output_prefix}_results.csv"
+    df.to_csv(results_csv)
+    print(f"\nResults saved to {results_csv}")
 
     # --- Phase 12: Weight Persistence ---
     print("\nSaving CASCADES v9 Manifold Weights...")
-    save_path = "cascades_v9_weights.pt"
+    save_path = f"{output_prefix}_weights.pt"
     # Extract only the adapter state dictionary to minimize file size
     adapter_state = {name: param for name, param in model.named_parameters() if 'wrapper' in name or 'adapter' in name}
     torch.save(adapter_state, save_path)
@@ -1082,6 +1096,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CASCADES v9 Ecosystem Training")
     parser.add_argument("--seed", type=int, default=42, help="Global random seed")
     parser.add_argument("--dmole_threshold", type=float, default=0.22, help="Activation selection threshold for ResonantCore injection")
+    parser.add_argument("--model_id", type=str, default="p-e-w/Qwen3-4B-Instruct-2507-heretic", help="HuggingFace model ID")
+    parser.add_argument("--output_prefix", type=str, default="cascades_v9", help="Prefix for output weights and CSV files")
     args = parser.parse_args()
     
-    train_cascades_v3(seed=args.seed, dmole_threshold=args.dmole_threshold)
+    train_cascades_v3(seed=args.seed, dmole_threshold=args.dmole_threshold, model_id=args.model_id, output_prefix=args.output_prefix)
