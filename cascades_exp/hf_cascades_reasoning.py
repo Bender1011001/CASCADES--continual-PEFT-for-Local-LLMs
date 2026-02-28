@@ -778,13 +778,18 @@ def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_N
                         a.ema_fast_U.data = a.ema_fast_U.data[:, 1:]
                         a.ema_slow_U.data = a.ema_slow_U.data[:, 1:]
                         a.ema_fast_V.data = a.ema_fast_V.data[1:, :]
-                        a.ema_slow_V.data = O_V.T @ a.ema_slow_V.data # Slicing after counter-rotation
-                        a.ema_fast_V.data = a.ema_fast_V.data[1:, :]
                         a.ema_slow_V.data = a.ema_slow_V.data[1:, :]
                     if ENABLE_COSO_NULLSPACE:
                         a.streaming_sketch_U.data = a.streaming_sketch_U.data[:, 1:]
                         a.ear_initialized = False
                         a.Q_null_U = torch.zeros(a.out_features, max(1, (a.U_shared.shape[1]) // 2), device=a.U_shared.device)
+                    # Rebuild gate_proj to match new rank dimension
+                    if hasattr(a, 'gate_proj'):
+                        new_r = a.U_shared.shape[1]
+                        old_gate = a.gate_proj
+                        a.gate_proj = torch.nn.Linear(new_r * 2, 1, bias=True).to(a.U_shared.device)
+                        torch.nn.init.xavier_uniform_(a.gate_proj.weight)
+                        a.gate_proj.bias.data.copy_(old_gate.bias.data)
                     a.contracted_this_step = True
                     
         # --- B. SINGULAR VALUE CALIBRATION (SVC) BUGFIX ---
