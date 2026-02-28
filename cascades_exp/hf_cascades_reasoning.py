@@ -683,6 +683,137 @@ def prepare_data(tokenizer, task_number, base_seed=42, use_system_prompt=True):
     return DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=collate_fn)
 
 
+@torch.no_grad()
+def diagnose_per_example_loss(model, tokenizer, device, seed=42):
+    """Per-example loss diagnostic — identifies which examples the model learned vs. struggles with.
+    
+    After training, this evaluates every single example in each task file individually,
+    sorts by loss (hardest first), and prints a detailed report. This is the data-driven
+    way to figure out what kind of training data actually works.
+    
+    Prints:
+      - Per-task loss distribution (mean, std, min, max)
+      - Top 10 hardest examples (highest loss = model can't learn these)
+      - Top 10 easiest examples (lowest loss = model learned these well)
+      - Response length correlation with loss
+    """
+    import json
+    import os
+    
+    task_files = [
+        ("Task 0 (Logic)", "cascades_exp/task0_logic_cot.jsonl"),
+        ("Task 1 (Arch)", "cascades_exp/task1_decomp_cot.jsonl"),
+        ("Task 2 (Code)", "cascades_exp/task2_action_cot.jsonl"),
+    ]
+    
+    model.eval()
+    
+    print(f"\n{'=' * 60}")
+    print("PER-EXAMPLE LOSS DIAGNOSTIC")
+    print(f"{'=' * 60}")
+    
+    for task_name, file_path in task_files:
+        if not os.path.exists(file_path):
+            print(f"\n  {task_name}: file not found, skipping")
+            continue
+            
+        examples = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    examples.append(json.loads(line))
+        
+        losses = []
+        for i, ex in enumerate(examples):
+            # Tokenize exactly like prepare_data does
+            messages = [
+                {"role": "system", "content": STRUCTURED_SYSTEM_PROMPT},
+                {"role": "user", "content": ex['prompt']},
+            ]
+            prompt_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            response_text = ex['response'] + tokenizer.eos_token
+            
+            prompt_tokens = tokenizer(prompt_text, add_special_tokens=False).input_ids
+            response_tokens = tokenizer(response_text, add_special_tokens=False).input_ids
+            
+            input_ids = prompt_tokens + response_tokens
+            if len(input_ids) > 1024:
+                input_ids = input_ids[:1024]
+            
+            attention_mask = [1] * len(input_ids)
+            labels = [-100] * len(prompt_tokens) + response_tokens
+            if len(labels) > 1024:
+                labels = labels[:1024]
+            
+            input_ids_t = torch.tensor([input_ids]).to(device)
+            attention_mask_t = torch.tensor([attention_mask]).to(device)
+            labels_t = torch.tensor([labels]).to(device)
+            
+            out = model(input_ids=input_ids_t, attention_mask=attention_mask_t, labels=labels_t)
+            loss_val = out.loss.item()
+            
+            resp_tokens = len(response_tokens)
+            resp_words = len(ex['response'].split())
+            
+            losses.append({
+                'idx': i,
+                'loss': loss_val,
+                'prompt': ex['prompt'][:100],
+                'resp_tokens': resp_tokens,
+                'resp_words': resp_words,
+                'truncated': len(prompt_tokens) + len(response_tokens) > 1024,
+            })
+        
+        # Sort by loss (hardest first)
+        losses.sort(key=lambda x: x['loss'], reverse=True)
+        
+        # Stats
+        all_losses = [x['loss'] for x in losses]
+        mean_loss = sum(all_losses) / len(all_losses)
+        std_loss = (sum((l - mean_loss)**2 for l in all_losses) / len(all_losses)) ** 0.5
+        
+        print(f"\n{'─' * 60}")
+        print(f"  {task_name}: {len(losses)} examples")
+        print(f"  Loss: mean={mean_loss:.4f}, std={std_loss:.4f}, "
+              f"min={min(all_losses):.4f}, max={max(all_losses):.4f}")
+        
+        # Truncation report
+        n_truncated = sum(1 for x in losses if x['truncated'])
+        if n_truncated:
+            print(f"  ⚠️  {n_truncated}/{len(losses)} examples TRUNCATED at 1024 tokens")
+        
+        # Length correlation
+        short = [x for x in losses if x['resp_words'] < 100]
+        medium = [x for x in losses if 100 <= x['resp_words'] < 300]
+        long = [x for x in losses if x['resp_words'] >= 300]
+        if short:
+            print(f"  Loss by length: short(<100w)={sum(x['loss'] for x in short)/len(short):.4f} "
+                  f"({len(short)} ex)", end="")
+        if medium:
+            print(f", med(100-300w)={sum(x['loss'] for x in medium)/len(medium):.4f} "
+                  f"({len(medium)} ex)", end="")
+        if long:
+            print(f", long(300+w)={sum(x['loss'] for x in long)/len(long):.4f} "
+                  f"({len(long)} ex)", end="")
+        print()
+        
+        # Top 10 hardest
+        print(f"\n  📈 TOP 10 HARDEST (highest loss — model can't learn these):")
+        for j, x in enumerate(losses[:10]):
+            trunc = " [TRUNCATED]" if x['truncated'] else ""
+            print(f"    {j+1}. loss={x['loss']:.4f} ({x['resp_words']}w) "
+                  f"#{x['idx']}: {x['prompt'][:70]}...{trunc}")
+        
+        # Top 10 easiest
+        print(f"\n  📉 TOP 10 EASIEST (lowest loss — model learned these well):")
+        for j, x in enumerate(reversed(losses[-10:])):
+            print(f"    {j+1}. loss={x['loss']:.4f} ({x['resp_words']}w) "
+                  f"#{x['idx']}: {x['prompt'][:70]}...")
+    
+    print(f"\n{'=' * 60}")
+    print("END DIAGNOSTIC — Use this data to decide what kind of examples to add.")
+    print(f"{'=' * 60}")
+
 def estimate_quant_noise(model):
     """Estimate quantization noise floor from 4-bit weight statistics."""
     stds = []
@@ -1119,6 +1250,10 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-In
     results_csv = f"{output_prefix}_results.csv"
     df.to_csv(results_csv)
     print(f"\nResults saved to {results_csv}")
+
+    # --- Per-Example Loss Diagnostic ---
+    print("\nRunning per-example loss diagnostic...")
+    diagnose_per_example_loss(model, tokenizer, device, seed=seed)
 
     # --- Phase 12: Weight Persistence ---
     print("\nSaving CASCADES v9 Manifold Weights...")
