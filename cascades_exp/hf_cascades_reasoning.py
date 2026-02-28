@@ -3,11 +3,21 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import math
+import sys
 import numpy as np
 import pandas as pd
 import time
+from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from torch.utils.data import DataLoader
+
+# Ensure cascades package is importable
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+from cascades.eval import STRUCTURED_SYSTEM_PROMPT
+from cascades.sleep import SleepConsolidation, SleepConfig
 
 # ============================================================================
 # CASCADES REASONING PIPELINE (Think -> Plan -> Act)
@@ -607,12 +617,20 @@ def inject_cascades_v3(model, rank=8, target_modules=None, layer_importance=None
     return adapters_critical, adapters_funlora
 
 
-def prepare_data(tokenizer, task_number, base_seed=42):
-    """Loads domain-specific JSONL prompts mapped for Llama-3-8B CoT reasoning adaptation."""
+def prepare_data(tokenizer, task_number, base_seed=42, use_system_prompt=True):
+    """Loads domain-specific JSONL prompts mapped for CoT reasoning adaptation.
+    
+    Args:
+        use_system_prompt: If True, includes the structured system prompt during training
+            to align with the inference prompt format, preventing distributional shift.
+    """
     import os
     import pandas as pd
     import torch
     from torch.utils.data import DataLoader, TensorDataset
+
+    # Import the same system prompt used during inference
+    # (already imported at module level via cascades.eval)
 
     torch.manual_seed(base_seed + task_number)
 
@@ -634,8 +652,14 @@ def prepare_data(tokenizer, task_number, base_seed=42):
     max_length = 1024 
     
     for p, r in zip(df['prompt'], df['response']):
-        # Llama-3 Native Chat Templating format 
-        messages = [{"role": "user", "content": p}]
+        # Prompt alignment: include system prompt during training if it will be used during inference
+        if use_system_prompt:
+            messages = [
+                {"role": "system", "content": STRUCTURED_SYSTEM_PROMPT},
+                {"role": "user", "content": p},
+            ]
+        else:
+            messages = [{"role": "user", "content": p}]
         prompt_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         response_text = r + tokenizer.eos_token
         
@@ -786,7 +810,7 @@ def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_N
                     for idx, (a, k) in enumerate(core_refs):
                         a.liquid_core.core_pool.data[k] = reconstructed[idx]
 
-def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-Instruct-2507-heretic", output_prefix="cascades_v9", lr_liquid=5e-3, lr_gate=1e-3, lr_funlora=1e-4, epochs=3):
+def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-Instruct-2507-heretic", output_prefix="cascades_v9", lr_liquid=5e-3, lr_gate=1e-3, lr_funlora=1e-4, epochs=3, eval_em=False, enable_sleep=True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Set basic global seeds
@@ -856,6 +880,12 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-In
     # Use the passed-in epochs value
     accuracy_matrix = np.zeros((num_tasks, num_tasks))
     start_time = time.time()
+
+    # Initialize the Sleep Consolidation engine
+    sleep_engine = None
+    if enable_sleep:
+        sleep_engine = SleepConsolidation(SleepConfig(verbose=True))
+        print("🛌 Sleep Consolidation Engine: ENABLED")
 
     for t in range(num_tasks):
         print(f"\n{'=' * 60}")
@@ -975,6 +1005,11 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-In
                     if mem_alloc > 7.8:
                         print("    [WARNING] VRAM spike above 7.8GB detected! OOM risk is high.")
 
+                # Periodic intra-task sleep (every 100 batches for long runs)
+                if enable_sleep and num_batches % 100 == 0 and num_batches > 0:
+                    print(f"    [Ep {ep+1} B {num_batches}] Intra-task micro-sleep...")
+                    sleep_engine.run(critical_adapters, task_id=t)
+
                 print(f"    [Ep {ep+1} B {num_batches}] Batch finished.")
 
             avg_loss = epoch_loss / max(num_batches, 1)
@@ -1022,6 +1057,10 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-In
             print(f"Dynamically Promoted (FunLoRA -> ResonantCore): {promoted}")
             print(f"Dynamically Demoted (ResonantCore -> FunLoRA): {demoted}")
             print(f"VRAM Optimization: Stale optimizer momentum buffers will be wiped and reconstructed.")
+
+        # --- SLEEP CYCLE: Bio-inspired offline consolidation ---
+        if enable_sleep:
+            sleep_stats = sleep_engine.run(critical_adapters, task_id=t)
 
         # --- Evaluation ---
         print(f"\n--- Evaluation after Task {t} ---")
@@ -1089,6 +1128,45 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-In
     torch.save(adapter_state, save_path)
     print(f"Weights saved successfully to {save_path}")
 
+    # --- Phase 13: Generative Exact Match Evaluation (Optional) ---
+    # This bridges the gap between proxy accuracy and actual generation quality.
+    # Uses structured system prompting + multi-level answer matching.
+    em_results = None
+    if eval_em and device != "cpu":
+        try:
+            from cascades.eval import evaluate_generative
+            print(f"\n{'=' * 60}")
+            print("GENERATIVE EXACT MATCH EVALUATION")
+            print(f"{'=' * 60}")
+
+            em_results = {}
+            for eval_t in range(num_tasks):
+                print(f"\n--- Generative Eval: Task {eval_t} ---")
+                task_em = evaluate_generative(
+                    model, tokenizer, eval_t, device=device,
+                    max_samples=50, max_new_tokens=512,
+                    use_system_prompt=True, verbose=True,
+                )
+                em_results[eval_t] = task_em
+
+            # Summary
+            print(f"\n{'=' * 60}")
+            print("GENERATIVE EM SUMMARY")
+            print(f"{'=' * 60}")
+            for t, res in em_results.items():
+                print(f"  Task {t}: Exact={res['exact_match_rate']*100:.1f}% "
+                      f"Normalized={res['normalized_match_rate']*100:.1f}% "
+                      f"Containment={res['containment_match_rate']*100:.1f}%")
+
+            avg_containment = sum(r['containment_match_rate'] for r in em_results.values()) / len(em_results)
+            print(f"\n  Average Containment Match: {avg_containment*100:.1f}%")
+            print(f"  (Compare with Proxy ACC: {avg_acc*100:.2f}%)")
+
+        except ImportError:
+            print("\n[WARN] cascades.eval not available, skipping generative evaluation.")
+        except Exception as e:
+            print(f"\n[WARN] Generative evaluation failed: {e}")
+
 
 
 if __name__ == "__main__":
@@ -1098,6 +1176,9 @@ if __name__ == "__main__":
     parser.add_argument("--dmole_threshold", type=float, default=0.22, help="Activation selection threshold for ResonantCore injection")
     parser.add_argument("--model_id", type=str, default="p-e-w/Qwen3-4B-Instruct-2507-heretic", help="HuggingFace model ID")
     parser.add_argument("--output_prefix", type=str, default="cascades_v9", help="Prefix for output weights and CSV files")
+    parser.add_argument("--eval_em", action="store_true", help="Run generative exact match evaluation after training")
+    parser.add_argument("--no-sleep", action="store_true", help="Disable bio-inspired sleep consolidation cycles")
     args = parser.parse_args()
     
-    train_cascades_v3(seed=args.seed, dmole_threshold=args.dmole_threshold, model_id=args.model_id, output_prefix=args.output_prefix)
+    train_cascades_v3(seed=args.seed, dmole_threshold=args.dmole_threshold, model_id=args.model_id, output_prefix=args.output_prefix, eval_em=args.eval_em, enable_sleep=not args.no_sleep)
+
