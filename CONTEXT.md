@@ -77,10 +77,10 @@ python cascades_exp/hf_cascades_reasoning.py --eval_em  # Training + generative 
 
 ## Training Data
 
-- `task0_logic_cot.jsonl` — 52 examples (math, proofs, algorithms, combinatorics)
-- `task1_decomp_cot.jsonl` — 25 examples (architecture, system design, planning)
-- `task2_action_cot.jsonl` — 22 examples (bash, python, terraform, docker)
-- Total: **99 examples** across 3 continual learning tasks
+- `task0_logic_cot.jsonl` — 168 examples (math, proofs, algorithms, combinatorics)
+- `task1_decomp_cot.jsonl` — 92 examples (architecture, system design, planning)
+- `task2_action_cot.jsonl` — 76 examples (bash, python, terraform, docker)
+- Total: **336 examples** across 3 continual learning tasks
 - Workflow: `.agents/workflows/create-training-data.md`
 
 ## Active Research Directions
