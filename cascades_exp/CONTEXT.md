@@ -1,15 +1,18 @@
 # CASCADES Experiment Directory
 
 ## Status
+
 - **Working**: hf_cascades.py (v1), hf_cascades_v2.py (v2 full fusion), hf_cascades_v3.py (v3.1 15-paper), hf_cascades_v4.py (v4 exact math), hf_cascades_v5.py (v5 TAG/ARR), lora_baseline.py
 - **Completed Runs**: v1 on TinyLlama/Qwen3, v2 on Qwen3, LoRA on Qwen3, v3.1 on Qwen3, v4 on Qwen3, v5 on Qwen3
 
 ## Tech Stack
+
 - Python 3.13, PyTorch, HuggingFace transformers, bitsandbytes, tokenizers≥0.21.1
 - Target model: `meta-llama/Meta-Llama-3-8B-Instruct` (4-bit NF4 quantized)
 - VRAM Budget: 8GB (Peak usage: 7.14GB)
 
 ## Key Files
+
 - `hf_cascades.py` — CASCADES v1 (core Riemannian QR + SVC + EMA)
 - `hf_cascades_v2.py` — CASCADES v2 (+ PaCA + DEAL heat kernel + CoSO null-space)
 - `hf_cascades_v3.py` — CASCADES v3.1: 15-paper full fusion (StelLA + GainLoRA + CL-LoRA + D-MoLE + FunLoRA + quant-aware DEAL)
@@ -19,8 +22,11 @@
 - `scripts/format_cot_datasets.py` — Distillation script to convert raw logic into strict CoT format.
 - `lora_baseline.py` — Standard LoRA baseline for comparison
 - `../CASCADES_proposal.md` — Full 15-paper synthesis paper
+- `../REDDIT_POST.md` — r/LocalLLaMA post (ready to copy-paste)
+- `../colab_cascades_v9.ipynb` — One-click Google Colab reproduction notebook
 
 ## Architecture Quirks
+
 - 4-bit quantized model uses `float16` compute dtype → adapters must initialize small (×0.01), alpha-mix at 0.1
 - `CASCADES_Linear.forward()` must cast adapter output to `base_out.dtype` to avoid SDPA mixed-dtype crash
 - GainLoRA gate computes in float32 → output MUST be cast back to input dtype before returning
@@ -29,6 +35,7 @@
 - Task IDs must be set on `CASCADES_v3_Linear` modules (not just adapters) for correct routing during eval
 
 ## Trap Diary
+
 | Issue                              | Cause                                                 | Fix                                               |
 | ---------------------------------- | ----------------------------------------------------- | ------------------------------------------------- |
 | RuntimeError: Expected device cuda | Adapters created on CPU                               | `new_module.to(module.weight.device)`             |
@@ -40,15 +47,17 @@
 | v3 D-MoLE probe crash              | requires_grad on 4-bit weights                        | Switched to activation variance hooks             |
 
 ## Anti-Patterns (DO NOT)
+
 - DO NOT return adapter output in float32 from forward() — always cast to input dtype
 - DO NOT use requires_grad on 4-bit quantized weights — they throw RuntimeError
 - DO NOT use fixed spectral thresholds in DEAL on quantized models — use quant-aware ε_quant
 - DO NOT apply Cayley retraction — use QR (O(dr²) vs O(d³))
 
 ## Experiment Results
+
 | Method                           | Avg ACC    | BWT        | Time  | Key Features                                                              |
 | -------------------------------- | ---------- | ---------- | ----- | ------------------------------------------------------------------------- |
-| LoRA Baseline (Qwen3 4-bit)      | 31.9%      | +11.2%*    | 70s   | Standard Adam                                                             |
+| LoRA Baseline (Qwen3 4-bit)      | 31.9%      | +11.2%\*   | 70s   | Standard Adam                                                             |
 | CASCADES v8 (Qwen3 4-bit)        | 14.87%     | +0.66%     | 27s   | Autopoietic Manifold + Adaptive Rank Routing (ARR)                        |
 | **CASCADES v9 Pro (Llama-3-8B)** | **46.82%** | **+0.82%** | ~800s | **Phase 15 Breakthrough**: Engine Swap, CoT Distillation, Rank 32 Ceiling |
 
@@ -57,6 +66,7 @@
 v9 Pro on Llama-3-8B demonstrates **massive reasoning capability scaling** (46.82% vs 14.9%) while maintaining strictly positive BWT (+0.82%). The system remains stable within the 8GB VRAM constraint (7.14GB peak).
 
 ## Build/Verify
+
 ```
 cd e:\code.projects\research
 cmd /c "set HF_HUB_DISABLE_PROGRESS_BARS=1 && python cascades_exp/hf_cascades_reasoning.py"
