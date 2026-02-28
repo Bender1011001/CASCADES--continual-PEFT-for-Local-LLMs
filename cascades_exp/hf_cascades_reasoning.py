@@ -735,10 +735,17 @@ def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_N
     if not adapters: return
     with torch.no_grad():
         # --- A. CONTINUOUS RANK CONTRACTION (EXHALE) ---
+        # IMPORTANT: We ZERO OUT dead dimensions instead of physically slicing
+        # parameter tensors. Slicing .data changes tensor shapes mid-training
+        # which breaks PyTorch's autograd graph (PermuteBackward0 shape mismatch).
+        # Zeroing is mathematically equivalent: the dead rank contributes nothing
+        # to the output (U[:,0]=0, V[0,:]=0, core[:,0,:]=core[:,:,0]=0).
         by_rank = {}
         for a in adapters:
             r = a.U_shared.shape[1]
-            if r > 2:
+            n_dead = getattr(a, '_dead_ranks', 0)
+            effective_r = r - n_dead
+            if effective_r > 2:
                 if r not in by_rank: by_rank[r] = []
                 by_rank[r].append(a)
 
@@ -751,11 +758,17 @@ def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_N
             D_Vs, O_Vs = torch.linalg.eigh(C_Rs)
             
             for i, a in enumerate(rank_adapters):
-                # Relative Variance Bound check
-                if (D_Us[i, 0] / (D_Us[i].sum() + 1e-8) < 0.0001) and (D_Vs[i, 0] / (D_Vs[i].sum() + 1e-8) < 0.0001):
-                    current_r = a.U_shared.shape[1]
-                    print(f"🫁 Breathing Manifold Triggered! Slicing dead rank {current_r} -> {current_r - 1}")
+                n_dead = getattr(a, '_dead_ranks', 0)
+                # Relative Variance Bound check (skip already-dead dimensions)
+                check_idx = n_dead  # First live dimension after dead ones
+                if check_idx >= r - 1:
+                    continue
+                if (D_Us[i, check_idx] / (D_Us[i, check_idx:].sum() + 1e-8) < 0.0001) and \
+                   (D_Vs[i, check_idx] / (D_Vs[i, check_idx:].sum() + 1e-8) < 0.0001):
+                    effective_r = r - n_dead
+                    print(f"🫁 Breathing Manifold Triggered! Zeroing dead rank (effective {effective_r} -> {effective_r - 1})")
                     O_U, O_V = O_Us[i], O_Vs[i]
+                    # Counter-rotate into eigenbasis
                     a.U_shared.data = a.U_shared.data @ O_U
                     a.V_shared.data = O_V.T @ a.V_shared.data
                     for k in range(a.liquid_core.num_cores):
@@ -769,27 +782,23 @@ def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_N
                         a.ema_fast_V.data = O_V.T @ a.ema_fast_V.data
                         a.ema_slow_V.data = O_V.T @ a.ema_slow_V.data
                     
-                    a.U_shared.data = a.U_shared.data[:, 1:]
-                    a.V_shared.data = a.V_shared.data[1:, :]
-                    a.liquid_core.core_pool.data = a.liquid_core.core_pool.data[:, 1:, 1:]
-                    a.ema_U.data = a.ema_U.data[:, 1:]
-                    a.ema_V.data = a.ema_V.data[1:, :]
+                    # Zero out the dead dimension instead of slicing
+                    dead_idx = check_idx
+                    a.U_shared.data[:, dead_idx] = 0.0
+                    a.V_shared.data[dead_idx, :] = 0.0
+                    for k in range(a.liquid_core.num_cores):
+                        a.liquid_core.core_pool.data[k, dead_idx, :] = 0.0
+                        a.liquid_core.core_pool.data[k, :, dead_idx] = 0.0
+                    a.ema_U.data[:, dead_idx] = 0.0
+                    a.ema_V.data[dead_idx, :] = 0.0
                     if ENABLE_PACA:
-                        a.ema_fast_U.data = a.ema_fast_U.data[:, 1:]
-                        a.ema_slow_U.data = a.ema_slow_U.data[:, 1:]
-                        a.ema_fast_V.data = a.ema_fast_V.data[1:, :]
-                        a.ema_slow_V.data = a.ema_slow_V.data[1:, :]
+                        a.ema_fast_U.data[:, dead_idx] = 0.0
+                        a.ema_slow_U.data[:, dead_idx] = 0.0
+                        a.ema_fast_V.data[dead_idx, :] = 0.0
+                        a.ema_slow_V.data[dead_idx, :] = 0.0
                     if ENABLE_COSO_NULLSPACE:
-                        a.streaming_sketch_U.data = a.streaming_sketch_U.data[:, 1:]
-                        a.ear_initialized = False
-                        a.Q_null_U = torch.zeros(a.out_features, max(1, (a.U_shared.shape[1]) // 2), device=a.U_shared.device)
-                    # Rebuild gate_proj to match new rank dimension
-                    if hasattr(a, 'gate_proj'):
-                        new_r = a.U_shared.shape[1]
-                        old_gate = a.gate_proj
-                        a.gate_proj = torch.nn.Linear(new_r * 2, 1, bias=True).to(a.U_shared.device)
-                        torch.nn.init.xavier_uniform_(a.gate_proj.weight)
-                        a.gate_proj.bias.data.copy_(old_gate.bias.data)
+                        a.streaming_sketch_U.data[:, dead_idx] = 0.0
+                    a._dead_ranks = n_dead + 1
                     a.contracted_this_step = True
                     
         # --- B. SINGULAR VALUE CALIBRATION (SVC) BUGFIX ---
