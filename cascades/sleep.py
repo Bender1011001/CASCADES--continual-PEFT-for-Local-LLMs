@@ -277,6 +277,10 @@ class SleepConsolidation:
         After thousands of QR retraction steps, floating-point errors
         accumulate and U^T U drifts from identity. This is like the brain
         recalibrating its reference frames during deep sleep.
+
+        Note on shapes:
+            U_shared: (d_out, r) — columns are orthonormal → U^T U ≈ I_r
+            V_shared: (r, d_in) — rows are orthonormal   → V V^T ≈ I_r
         """
         corrected = 0
         threshold = self.config.reorth_drift_threshold
@@ -285,50 +289,48 @@ class SleepConsolidation:
             if not hasattr(adapter, "U_shared"):
                 continue
 
-            U = adapter.U_shared  # (d_out, r)
-            V = adapter.V_shared  # (d_in, r)
+            U = adapter.U_shared  # (d_out, r) — orthonormal columns
+            V = adapter.V_shared  # (r, d_in) — orthonormal rows
 
-            # Measure orthonormality deviation: ||U^T U - I||_F
             r = U.shape[1]
             I_r = torch.eye(r, device=U.device, dtype=U.dtype)
 
-            drift_U = (U.T @ U - I_r).norm().item()
-            drift_V = (V.T @ V - I_r).norm().item()
+            # Measure orthonormality deviation
+            drift_U = (U.T @ U - I_r).norm().item()       # columns check
+            drift_V = (V @ V.T - I_r).norm().item()        # rows check
 
             if drift_U > threshold or drift_V > threshold:
-                # Re-orthogonalize via QR decomposition
+                # Re-orthogonalize U via QR (column-orthonormal)
                 if drift_U > threshold:
                     Q_U, R_U = torch.linalg.qr(U)
-                    # U_old ≈ Q_U @ R_U. To preserve ΔW = U S V^T,
-                    # cores must absorb R_U: S_new = R_U @ S_old
+                    # U_old ≈ Q_U @ R_U → cores absorb R_U: S_new = R_U @ S_old
                     R_U_inv = torch.linalg.pinv(R_U)  # (r, r)
                     for k in range(adapter.liquid_core.core_pool.shape[0]):
                         adapter.liquid_core.core_pool.data[k] = (
                             R_U @ adapter.liquid_core.core_pool.data[k]
                         )
-                    # EMA/sketch buffers are (*, r) — rotate their r-columns
-                    # by R_inv: buf_new = buf_old @ R_inv^T to stay aligned
                     if hasattr(adapter, "ema_U"):
-                        # ema_U is (d_out, r), R_inv is (r, r)
                         adapter.ema_U.data = adapter.ema_U.data @ R_U_inv
                     if hasattr(adapter, "streaming_sketch_U"):
-                        # streaming_sketch_U is (sketch_dim, r)
                         adapter.streaming_sketch_U.data = (
                             adapter.streaming_sketch_U.data @ R_U_inv
                         )
                     adapter.U_shared.data.copy_(Q_U)
 
+                # Re-orthogonalize V via QR on V^T (row-orthonormal)
                 if drift_V > threshold:
-                    Q_V, R_V = torch.linalg.qr(V)
-                    R_V_inv = torch.linalg.pinv(R_V)  # (r, r)
+                    # V is (r, d_in). QR works on columns, so decompose V^T
+                    Q_Vt, R_Vt = torch.linalg.qr(V.T)  # V^T = Q_Vt @ R_Vt
+                    # V_new = Q_Vt^T = row-orthonormal (r, d_in)
+                    # V_old = R_Vt^T @ Q_Vt^T → cores absorb R_Vt^T on right
+                    R_Vt_inv = torch.linalg.pinv(R_Vt)  # (r, r)
                     for k in range(adapter.liquid_core.core_pool.shape[0]):
                         adapter.liquid_core.core_pool.data[k] = (
-                            adapter.liquid_core.core_pool.data[k] @ R_V
+                            adapter.liquid_core.core_pool.data[k] @ R_Vt.T
                         )
                     if hasattr(adapter, "ema_V"):
-                        # ema_V is (d_in, r), R_V_inv is (r, r)
-                        adapter.ema_V.data = adapter.ema_V.data @ R_V_inv
-                    adapter.V_shared.data.copy_(Q_V)
+                        adapter.ema_V.data = R_Vt_inv.T @ adapter.ema_V.data
+                    adapter.V_shared.data.copy_(Q_Vt.T)
 
                 corrected += 1
 

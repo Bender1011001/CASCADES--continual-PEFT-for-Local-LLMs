@@ -30,16 +30,19 @@ class MockAdapter:
         self.in_features = d_in
 
         # Stiefel bases — start orthonormal
+        # U_shared: (d_out, r) — column-orthonormal
         U, _, _ = torch.linalg.svd(torch.randn(d_out, rank), full_matrices=False)
-        V, _, _ = torch.linalg.svd(torch.randn(d_in, rank), full_matrices=False)
         self.U_shared = torch.nn.Parameter(U)
-        self.V_shared = torch.nn.Parameter(V)
+
+        # V_shared: (r, d_in) — row-orthonormal (matches real CASCADES adapter)
+        Vt, _, _ = torch.linalg.svd(torch.randn(rank, d_in), full_matrices=False)
+        self.V_shared = torch.nn.Parameter(Vt)
 
         self.liquid_core = MockLiquidCore(num_cores=num_cores, rank=rank)
 
-        # EMA buffers
+        # EMA buffers — same shape as their corresponding bases
         self.ema_U = torch.nn.Parameter(torch.randn(d_out, rank))
-        self.ema_V = torch.nn.Parameter(torch.randn(d_in, rank))
+        self.ema_V = torch.nn.Parameter(torch.randn(rank, d_in))
 
         # Sketch buffer
         self.streaming_sketch_U = torch.nn.Parameter(torch.randn(10, rank))
