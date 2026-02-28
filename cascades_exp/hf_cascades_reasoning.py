@@ -343,47 +343,33 @@ class CASCADES_v6_Adapter(nn.Module):
                     n_orig, n_free = tangent_U.norm(), free_U.norm()
                     n_occ = (tangent_U - free_U).norm()
                     
-                    # === V8 AUTOPOIESIS (DYNAMIC RANK EXPANSION) ===
-                    if n_free / (n_occ + n_free + 1e-8) < 0.10 and self.U_shared.shape[1] < 32: 
+                    # === V8 AUTOPOIESIS (DYNAMIC RANK RECYCLING) ===
+                    # Instead of physically expanding tensors (breaks optimizer state),
+                    # recycle a dead/zeroed dimension from a previous contraction.
+                    n_dead = getattr(self, '_dead_ranks', 0)
+                    if n_free / (n_occ + n_free + 1e-8) < 0.10 and n_dead > 0: 
                         with torch.no_grad():
-                            print(f"🧬 Autopoiesis Triggered! Expanding Rank {self.U_shared.shape[1]} -> {self.U_shared.shape[1] + 1}")
+                            revive_idx = n_dead - 1
+                            print(f"🧬 Autopoiesis Triggered! Recycling dead rank "
+                                  f"(reviving dim {revive_idx}, effective "
+                                  f"{self.U_shared.shape[1] - n_dead} -> "
+                                  f"{self.U_shared.shape[1] - n_dead + 1})")
                             
-                            # 1. Extract the strongest un-represented gradient direction in ambient space
-                            u_new = grad_U.mean(dim=1, keepdim=True)
-                            u_new = u_new - self.U_shared @ (self.U_shared.T @ u_new) # Gram-Schmidt
+                            # Extract the strongest un-represented gradient direction
+                            u_new = grad_U.mean(dim=1)
+                            u_new = u_new - self.U_shared @ (self.U_shared.T @ u_new)
                             u_new = u_new / (u_new.norm() + 1e-8)
                             
-                            v_new = grad_V.mean(dim=0, keepdim=True) 
+                            v_new = grad_V.mean(dim=0) 
                             v_new = v_new - (v_new @ self.V_shared.T) @ self.V_shared
                             v_new = v_new / (v_new.norm() + 1e-8)
                             
-                            # 2. Physically expand the Stiefel Bases in VRAM
-                            self.U_shared = nn.Parameter(torch.cat([self.U_shared, u_new], dim=1))
-                            self.V_shared = nn.Parameter(torch.cat([self.V_shared, v_new], dim=0))
+                            # Inject into the dead slot
+                            self.U_shared.data[:, revive_idx] = u_new
+                            self.V_shared.data[revive_idx, :] = v_new
                             
-                            # 3. Zero-pad Cores (Maintains exact isometric immersion)
-                            # Pad the last two dimensions (rank, rank) with (0, 1) to add a row and column for each core
-                            self.liquid_core.core_pool.data = F.pad(self.liquid_core.core_pool.data, (0, 1, 0, 1), "constant", 0.0)
-                                
-                            # 4. Zero-pad all Covariant Tracking Buffers
-                            self.ema_U = F.pad(self.ema_U, (0, 1))
-                            self.streaming_sketch_U = F.pad(self.streaming_sketch_U, (0, 1))
-                            self.ema_V = F.pad(self.ema_V, (0, 0, 0, 1)) # Note transpose convention for V
-                            
-                            if ENABLE_PACA:
-                                self.ema_fast_U = F.pad(self.ema_fast_U, (0, 1))
-                                self.ema_slow_U = F.pad(self.ema_slow_U, (0, 1))
-                                self.ema_fast_V = F.pad(self.ema_fast_V, (0, 0, 0, 1))
-                                self.ema_slow_V = F.pad(self.ema_slow_V, (0, 0, 0, 1))
-                            
-                            # 5. Expand tangents so QR retraction succeeds on the new shape
-                            # We use free_U for U to preserve the projected direction 
-                            tangent_U = torch.cat([free_U, torch.zeros_like(u_new)], dim=1)
-                            tangent_V = torch.cat([tangent_V, torch.zeros_like(v_new)], dim=0)
-                            
-                            # Override norms to prevent anomalous scaling after expansion
-                            n_orig, n_free = tangent_U.norm(), tangent_U.norm()
-                            free_U = tangent_U
+                            self._dead_ranks = n_dead - 1
+                            self.contracted_this_step = True
                             
                     if n_orig > 1e-8 and n_free > 1e-8:
                         tangent_U = free_U * min(n_orig / n_free, 5.0)

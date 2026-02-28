@@ -362,72 +362,44 @@ class CASCADESAdapter(nn.Module):
                     n_orig, n_free = tangent_U.norm(), free_U.norm()
                     n_occ = (tangent_U - free_U).norm()
 
-                    # Autopoiesis: dynamic rank expansion
+                    # Autopoiesis: dynamic rank recycling
+                    # Instead of physically expanding tensors (which creates new
+                    # nn.Parameter objects not tracked by the optimizer), we
+                    # recycle a dead/zeroed dimension from a previous contraction.
+                    n_dead = getattr(self, '_dead_ranks', 0)
                     if (
                         n_free / (n_occ + n_free + 1e-8) < 0.10
-                        and self.U_shared.shape[1] < 32
+                        and n_dead > 0
                     ):
                         with torch.no_grad():
+                            # Revive the most recently killed dimension
+                            revive_idx = n_dead - 1
                             print(
-                                f"🧬 Autopoiesis Triggered! Expanding Rank "
-                                f"{self.U_shared.shape[1]} -> "
-                                f"{self.U_shared.shape[1] + 1}"
+                                f"🧬 Autopoiesis Triggered! Recycling dead rank "
+                                f"(reviving dim {revive_idx}, effective "
+                                f"{self.U_shared.shape[1] - n_dead} -> "
+                                f"{self.U_shared.shape[1] - n_dead + 1})"
                             )
 
                             # Extract strongest un-represented gradient direction
-                            u_new = grad_U.mean(dim=1, keepdim=True)
+                            u_new = grad_U.mean(dim=1)
                             u_new = u_new - self.U_shared @ (
                                 self.U_shared.T @ u_new
                             )  # Gram-Schmidt
                             u_new = u_new / (u_new.norm() + 1e-8)
 
-                            v_new = grad_V.mean(dim=0, keepdim=True)
+                            v_new = grad_V.mean(dim=0)
                             v_new = v_new - (v_new @ self.V_shared.T) @ self.V_shared
                             v_new = v_new / (v_new.norm() + 1e-8)
 
-                            # Physically expand Stiefel bases
-                            self.U_shared = nn.Parameter(
-                                torch.cat([self.U_shared, u_new], dim=1)
-                            )
-                            self.V_shared = nn.Parameter(
-                                torch.cat([self.V_shared, v_new], dim=0)
-                            )
+                            # Inject into the dead slot
+                            self.U_shared.data[:, revive_idx] = u_new
+                            self.V_shared.data[revive_idx, :] = v_new
 
-                            # Zero-pad cores (maintains isometric immersion)
-                            self.liquid_core.core_pool.data = F.pad(
-                                self.liquid_core.core_pool.data,
-                                (0, 1, 0, 1),
-                                "constant",
-                                0.0,
-                            )
+                            self._dead_ranks = n_dead - 1
+                            self.contracted_this_step = True
 
-                            # Zero-pad all covariant tracking buffers
-                            self.ema_U = F.pad(self.ema_U, (0, 1))
-                            self.streaming_sketch_U = F.pad(
-                                self.streaming_sketch_U, (0, 1)
-                            )
-                            self.ema_V = F.pad(self.ema_V, (0, 0, 0, 1))
-
-                            if cfg.enable_paca:
-                                self.ema_fast_U = F.pad(self.ema_fast_U, (0, 1))
-                                self.ema_slow_U = F.pad(self.ema_slow_U, (0, 1))
-                                self.ema_fast_V = F.pad(
-                                    self.ema_fast_V, (0, 0, 0, 1)
-                                )
-                                self.ema_slow_V = F.pad(
-                                    self.ema_slow_V, (0, 0, 0, 1)
-                                )
-
-                            # Expand tangents for QR retraction
-                            tangent_U = torch.cat(
-                                [free_U, torch.zeros_like(u_new)], dim=1
-                            )
-                            tangent_V = torch.cat(
-                                [tangent_V, torch.zeros_like(v_new)], dim=0
-                            )
-
-                            n_orig, n_free = tangent_U.norm(), tangent_U.norm()
-                            free_U = tangent_U
+                            # Tangents stay the same shape — no padding needed
 
                     if n_orig > 1e-8 and n_free > 1e-8:
                         tangent_U = free_U * min(n_orig / n_free, 5.0)
