@@ -98,12 +98,69 @@ def extract_answer_from_cot(text: str) -> str:
     return text.strip()
 
 
+def normalize_latex(text: str) -> str:
+    """Normalize LaTeX/math notation to plain text equivalents.
+
+    Handles: Big-O variants, LaTeX commands, delimiters, and operators.
+    This is critical for matching model outputs that may use different
+    notation than the training data (e.g., O(n^2 log n) vs Theta(n^2 \\log n)).
+    """
+    # Strip dollar signs and display math
+    text = text.replace('$', '')
+    text = re.sub(r'\\\[|\\\]', '', text)
+
+    # Normalize Big-O family: Θ, Ω, θ → O (for matching purposes)
+    text = text.replace('\u0398', 'O').replace('\u03b8', 'O').replace('\u03a9', 'O')
+    text = re.sub(r'\\(?:Theta|theta|Omega|omega)\b', 'O', text)
+
+    # Remove \left, \right delimiters
+    text = re.sub(r'\\(?:left|right)\s*', '', text)
+
+    # Convert LaTeX commands to plain text
+    latex_to_plain = [
+        (r'\\log\b', 'log'),
+        (r'\\ln\b', 'ln'),
+        (r'\\sqrt\{([^}]*)\}', r'sqrt(\1)'),
+        (r'\\sqrt\b', 'sqrt'),
+        (r'\\cdot\b', '*'),
+        (r'\\times\b', '*'),
+        (r'\\pm\b', '+-'),
+        (r'\\geq\b', '>='),
+        (r'\\leq\b', '<='),
+        (r'\\neq\b', '!='),
+        (r'\\approx\b', '~'),
+        (r'\\infty\b', 'infinity'),
+        (r'\\sum\b', 'sum'),
+        (r'\\prod\b', 'prod'),
+        (r'\\pi\b', 'pi'),
+    ]
+    for pattern, replacement in latex_to_plain:
+        text = re.sub(pattern, replacement, text)
+
+    # Simple \frac{a}{b} → a/b
+    text = re.sub(r'\\frac\{([^}]*)\}\{([^}]*)\}', r'(\1)/(\2)', text)
+
+    # Strip remaining \text{}, \mathrm{}, etc.
+    text = re.sub(r'\\(?:text|mathrm|mathcal|mathbb|operatorname)\{([^}]*)\}', r'\1', text)
+
+    # Remove standalone backslash commands
+    text = re.sub(r'\\([a-zA-Z]+)', r'\1', text)
+
+    # Remove curly braces
+    text = text.replace('{', '').replace('}', '')
+
+    # Double backslash → single
+    text = text.replace('\\\\', '\\')
+
+    return text
+
+
 def normalize_answer(text: str) -> str:
     """Normalize an answer string for flexible comparison.
 
-    Applies: lowercase, unicode normalization, whitespace collapse,
-    removal of common mathematical formatting artifacts, and
-    stripping of enclosing quotes/periods/punctuation.
+    Applies: LaTeX normalization, lowercase, unicode normalization,
+    whitespace collapse, removal of common mathematical formatting
+    artifacts, and stripping of enclosing quotes/periods/punctuation.
     """
     if not text:
         return ""
@@ -111,11 +168,11 @@ def normalize_answer(text: str) -> str:
     # Unicode normalize
     text = unicodedata.normalize('NFKD', text)
 
+    # LaTeX/math notation normalization (before lowercasing for Big-O)
+    text = normalize_latex(text)
+
     # Lowercase
     text = text.lower()
-
-    # Remove LaTeX dollar signs and common formatting
-    text = text.replace('$', '').replace('\\\\', '\\')
 
     # Remove common wrapper phrases
     removals = [
@@ -376,7 +433,7 @@ def evaluate_generative(
         details.append(detail)
 
         if verbose:
-            status = "✅ MATCH" if is_containment else "❌ MISS"
+            status = "\u2705 MATCH" if is_containment else "\u274c MISS"
             match_type = ""
             if is_exact:
                 match_type = " (exact)"

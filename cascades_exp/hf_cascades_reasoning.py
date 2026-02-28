@@ -810,7 +810,7 @@ def batched_autopoiesis_and_svc(adapters, ENABLE_SVC, ENABLE_PACA, ENABLE_COSO_N
                     for idx, (a, k) in enumerate(core_refs):
                         a.liquid_core.core_pool.data[k] = reconstructed[idx]
 
-def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-Instruct-2507-heretic", output_prefix="cascades_v9", lr_liquid=5e-3, lr_gate=1e-3, lr_funlora=1e-4, epochs=3, eval_em=False, enable_sleep=True):
+def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-Instruct-2507-heretic", output_prefix="cascades_v9", lr_liquid=2e-3, lr_gate=5e-4, lr_funlora=5e-5, epochs=2, eval_em=False, enable_sleep=True):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Set basic global seeds
@@ -971,7 +971,7 @@ def train_cascades_v3(seed=42, dmole_threshold=0.22, model_id="p-e-w/Qwen3-4B-In
                 # === CASCADES v3.1 Full Pipeline (critical adapters only) ===
                 print(f"    [Ep {ep+1} B {num_batches+1}] Adapter CASCADES descent step...")
                 for a in critical_adapters:
-                     a.full_descent_step(lr=0.01)
+                     a.full_descent_step(lr=0.005)
                      
                      # V9: Bi-Directional Optimizer State Elasticity Hook 
                      param = a.liquid_core.core_pool
