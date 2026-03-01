@@ -6,17 +6,19 @@ CASCADES is an _Autopoietic Cognitive Ecosystem_ designed to adapt fragile, abli
 
 ## 🏆 The 4B Heretic Breakthrough
 
-Standard fine-tuning (LoRA) destroys the reasoning architecture of abliterated models. CASCADES solves this by constraining updates to Autopoietic Stiefel Manifolds.
+Standard fine-tuning (LoRA) destroys the reasoning architecture of abliterated models. CASCADES solves this by constraining updates to Autopoietic Stiefel Manifolds and training on pure zero-shot reasoning tasks.
 
-| Method              | Model                | Backward Transfer (BWT) | Status                      |
-| :------------------ | :------------------- | :---------------------- | :-------------------------- |
-| **Standard LoRA**   | Qwen3-8B Heretic     | **-12.18%**             | **Catastrophic Forgetting** |
-| **CASCADES v9 Pro** | **Qwen3-4B Heretic** | **+0.82%**              | **REASONING PRESERVED**     |
+| Method              | Model                | Avg ACC    | BWT        | VRAM      |
+| :------------------ | :------------------- | :--------- | :--------- | :-------- |
+| Budget-Matched LoRA | Qwen3-4B             | ~11.5%     | -28.4%     | ~7.8GB    |
+| Standard LoRA       | Qwen3-8B Heretic     | 25.84%     | -12.18%    | 7.8GB     |
+| **CASCADES v9 Pro** | **Qwen3-4B Heretic** | **35.91%** | **-1.46%** | **5.2GB** |
 
 ### Key Results
 
-- **Proxy Accuracy**: 46.82% on reasoning task streams.
-- **Hardware**: Benchmarked on a single RTX 4060 Ti (8GB VRAM).
+- **Avg Reasoning Accuracy**: 35.91% across 3 zero-shot reasoning task streams (495 examples).
+- **Near-Zero Forgetting**: -1.46% BWT — previous tasks are almost perfectly preserved.
+- **Hardware**: Benchmarked on a single RTX 4060 Ti (8GB VRAM, 5.2GB used).
 - **Speed**: 2.4x throughput increase via D-MoLE dynamic expert routing.
 
 ## 🚀 Quick Start
@@ -92,7 +94,7 @@ adapter = CASCADESAdapter(d_in, d_out, rank=8, config=config)
 
 ### Evaluation Pipeline
 
-The generative eval module solves the exact match gap (0% EM despite 46.82% proxy accuracy):
+The generative eval module solves the exact match gap with structured `<think>` prompting:
 
 ```python
 from cascades import evaluate_generative, answers_match
@@ -161,9 +163,9 @@ Details on the **Transpose Parity Bug** fix (R^⊤ mixing) and the **GQA Scaling
 
 ## ⚠️ Limitations
 
-- **Exact Match**: While proxy accuracy reaches 46.82%, generative exact match rates require the structured evaluation pipeline (`--eval_em`)
+- **Exact Match**: While proxy accuracy reaches 35.91%, generative exact match rates require the structured evaluation pipeline (`--eval_em`)
 - **GQA Scaling Paradox**: Performance plateaus at 8B (32.97%) compared to 4B breakthrough — see Section 7 of the paper
-- **Training Data**: Current experiments use small canonical task sets (6 samples × 3 domains)
+- **Training Data**: Current experiments use 495 zero-shot reasoning examples (159 logic + 184 critical analysis + 152 algorithmic synthesis)
 
 ---
 

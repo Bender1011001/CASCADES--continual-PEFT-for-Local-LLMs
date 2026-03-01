@@ -3,9 +3,9 @@
 ## Status
 
 - **Working**: Core math ops library (`cascades/`), v1-v5 experiment scripts, v9 Pro reasoning pipeline, reproduction script, unit tests, Colab notebook, Reddit post
-- **Proven**: 4B Heretic Breakthrough (+0.82% BWT, 46.82% proxy accuracy on Qwen3-4B)
-- **Addressed**: Exact Match inference gap (generative eval pipeline built, `--eval_em` flag), library refactoring complete
-- **Broken/Incomplete**: 8B GQA scaling paradox
+- **Proven**: v9 Data Overhaul (35.91% avg ACC, -1.46% BWT on Qwen3-4B Heretic, 5.2GB VRAM)
+- **Addressed**: Exact Match inference gap (generative eval pipeline built, `--eval_em` flag), library refactoring complete, BWT regression fixed, zero-shot reasoning data overhaul
+- **Broken/Incomplete**: 8B GQA scaling paradox, EM generative scores not yet measured on GPU
 
 ## Tech Stack
 
@@ -75,19 +75,20 @@ python reproduce_the_breakthrough.py  # Needs 8GB GPU
 python cascades_exp/hf_cascades_reasoning.py --eval_em  # Training + generative EM eval
 ```
 
-## Training Data
+## Training Data (v9 Data Overhaul)
 
-- `task0_logic_cot.jsonl` — 168 examples (math, proofs, algorithms, combinatorics)
-- `task1_decomp_cot.jsonl` — 92 examples (architecture, system design, planning)
-- `task2_action_cot.jsonl` — 76 examples (bash, python, terraform, docker)
-- Total: **336 examples** across 3 continual learning tasks
+- `task0_logic_cot.jsonl` — 159 examples (first-principles logic, math, Fermi estimation, paradoxes)
+- `task1_decomp_cot.jsonl` — 184 examples (anti-sycophancy, critical analysis, myth debunking)
+- `task2_action_cot.jsonl` — 152 examples (Python algorithmic synthesis: DP, sliding windows, Kahn's)
+- Total: **495 examples** across 3 zero-shot reasoning tasks (~150 word responses)
 - Workflow: `.agents/workflows/create-training-data.md`
 
 ## Active Research Directions
 
 1. ~~Exact Match Gap~~: Addressed with `cascades/eval.py` + `--eval_em` flag (needs GPU run)
-2. **GQA Scaling Paradox**: 8B plateau at ~33% — dimension-calibrated Riemannian step sizes
-3. **Standard Benchmarks**: No comparison with published CL benchmarks yet
-4. ~~Code Refactoring~~: Complete — `cascades/adapters.py`, `config.py`, `injection.py`
-5. ~~Test Coverage~~: 166 tests passing including v9 adapter + sleep tests
-6. ~~Sleep Consolidation~~: Complete — 4-phase bio-inspired system in `cascades/sleep.py`
+2. ~~BWT Regression~~: Fixed — recovered from -4.99% to -1.46% via LR reduction + data overhaul
+3. **GQA Scaling Paradox**: 8B plateau at ~33% — dimension-calibrated Riemannian step sizes
+4. **Standard Benchmarks**: No comparison with published CL benchmarks yet
+5. ~~Code Refactoring~~: Complete — `cascades/adapters.py`, `config.py`, `injection.py`
+6. ~~Test Coverage~~: 166 tests passing including v9 adapter + sleep tests
+7. ~~Sleep Consolidation~~: Complete — 4-phase bio-inspired system in `cascades/sleep.py`

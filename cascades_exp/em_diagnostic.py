@@ -125,14 +125,16 @@ def run_diagnostic(
         print(f"\n  --- Mode: {mode_name} ---")
         exact, normalized, containment, total = 0, 0, 0, 0
         token_f1_sum = 0.0
+        batch_size = 4
+        
+        # Ensure left padding for batched generation
+        tokenizer.padding_side = "left"
 
-        for i, sample in enumerate(samples):
-            prompt = sample["prompt"]
-            reference_response = sample["response"].strip()
-            reference_answer = extract_answer_from_cot(reference_response)
-
-            prompt_text = prompt_builder(prompt)
-            inputs = tokenizer(prompt_text, return_tensors="pt").to(device)
+        for batch_idx in range(0, len(samples), batch_size):
+            batch_samples = samples[batch_idx : batch_idx + batch_size]
+            prompt_texts = [prompt_builder(s["prompt"]) for s in batch_samples]
+            
+            inputs = tokenizer(prompt_texts, return_tensors="pt", padding=True).to(device)
 
             start_t = time.time()
             outputs = model.generate(
@@ -144,47 +146,54 @@ def run_diagnostic(
             )
             gen_time = time.time() - start_t
 
-            generated_text = tokenizer.decode(
-                outputs[0][inputs["input_ids"].shape[1] :],
-                skip_special_tokens=True,
-            ).strip()
+            for j, out_ids in enumerate(outputs):
+                global_idx = batch_idx + j
+                sample = batch_samples[j]
+                
+                reference_response = sample["response"].strip()
+                reference_answer = extract_answer_from_cot(reference_response)
+                
+                generated_text = tokenizer.decode(
+                    out_ids[inputs["input_ids"].shape[1] :],
+                    skip_special_tokens=True,
+                ).strip()
 
-            generated_answer = extract_answer_from_cot(generated_text)
+                generated_answer = extract_answer_from_cot(generated_text)
 
-            is_exact = generated_answer.strip() == reference_answer.strip()
-            is_normalized = answers_match(generated_answer, reference_answer, strict=True)
-            is_containment = answers_match(generated_answer, reference_answer, strict=False)
+                is_exact = generated_answer.strip() == reference_answer.strip()
+                is_normalized = answers_match(generated_answer, reference_answer, strict=True)
+                is_containment = answers_match(generated_answer, reference_answer, strict=False)
 
-            # Token-level F1
-            gen_tokens = set(normalize_answer(generated_answer).split())
-            ref_tokens = set(normalize_answer(reference_answer).split())
-            if gen_tokens and ref_tokens:
-                precision = len(gen_tokens & ref_tokens) / len(gen_tokens)
-                recall = len(gen_tokens & ref_tokens) / len(ref_tokens)
-                f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-            else:
-                f1 = 0.0
+                # Token-level F1
+                gen_tokens = set(normalize_answer(generated_answer).split())
+                ref_tokens = set(normalize_answer(reference_answer).split())
+                if gen_tokens and ref_tokens:
+                    precision = len(gen_tokens & ref_tokens) / len(gen_tokens)
+                    recall = len(gen_tokens & ref_tokens) / len(ref_tokens)
+                    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+                else:
+                    f1 = 0.0
 
-            token_f1_sum += f1
-            if is_exact:
-                exact += 1
-            if is_normalized:
-                normalized += 1
-            if is_containment:
-                containment += 1
-            total += 1
+                token_f1_sum += f1
+                if is_exact:
+                    exact += 1
+                if is_normalized:
+                    normalized += 1
+                if is_containment:
+                    containment += 1
+                total += 1
 
-            # Diagnostic output — the key data
-            status = "✅" if is_containment else "❌"
-            print(f"\n    [{i+1}/{len(samples)}] {status} (time: {gen_time:.1f}s)")
-            print(f"      REF answer : {reference_answer[:120]}")
-            print(f"      GEN answer : {generated_answer[:120]}")
-            if not is_containment:
-                # Show more of the raw generation to understand failure mode
-                print(f"      RAW gen (first 300 chars):")
-                for line in generated_text[:300].split("\n"):
-                    print(f"        | {line}")
-                print(f"      Token F1: {f1:.3f}")
+                # Diagnostic output — the key data
+                status = "✅" if is_containment else "❌"
+                print(f"\n    [{global_idx+1}/{len(samples)}] {status} (batch time: {gen_time:.1f}s)")
+                print(f"      REF answer : {reference_answer[:120]}")
+                print(f"      GEN answer : {generated_answer[:120]}")
+                if not is_containment:
+                    # Show more of the raw generation to understand failure mode
+                    print(f"      RAW gen (first 300 chars):")
+                    for line in generated_text[:300].split("\n"):
+                        print(f"        | {line}")
+                    print(f"      Token F1: {f1:.3f}")
 
         results_by_mode[mode_name] = {
             "exact": exact,
