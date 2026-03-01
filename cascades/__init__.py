@@ -1,17 +1,23 @@
 """CASCADES: Parameter-Efficient Continual Adaptation via Shared Dynamic Subspaces."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 # Configuration
 from cascades.config import AblationConfig, DEFAULT_CONFIG, MINIMAL_CONFIG  # noqa: F401
 
-# Core adapters (v9 architecture)
+# Core adapters (v10 architecture)
 from cascades.adapters import (  # noqa: F401
     CASCADESAdapter,
     CASCADESLinear,
     FunLoRA_Activation,
     FunLoRA_Adapter,
     ResonantCore,
+)
+
+# v10 math operations
+from cascades.math_ops import (  # noqa: F401
+    gqa_precondition_gradient,
+    soft_ear,
 )
 
 # Data loading

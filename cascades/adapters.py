@@ -1,15 +1,20 @@
 ﻿"""
-CASCADES v9 core adapter modules — extracted from train.py.
+CASCADES v10 core adapter modules.
 
-This module contains the complete CASCADES v9 Pro architecture:
+This module contains the complete CASCADES v10 "Elastic Riemannian Ecosystem":
   - FunLoRA_Activation: Custom autograd activation with analytical derivatives
   - FunLoRA_Adapter: Zero-VRAM rank-1 adapter for non-critical layers
   - ResonantCore: Hebbian routed multi-core pool (v8 architecture)
   - CASCADESAdapter: Full boundary-less adapter with Stiefel manifold, EAR, PaCA, SVC
   - CASCADESLinear: Wrapper selecting critical (full adapter) vs non-critical (FunLoRA)
 
-All classes accept an AblationConfig to control which components are active,
-replacing the old global ENABLE_* flags pattern.
+v10 advancements over v9:
+  - GQA-aware metric preconditioning (resolves 8B GQA paradox)
+  - Tikhonov-regularized soft-EAR (smooth gradient reassignment)
+  - Principal tangent expansion (noise-free rank revival via EAR sketch)
+  - Subspace-contrastive decoding (adapter-level CFG for inference)
+
+All classes accept an AblationConfig to control which components are active.
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ import torch.nn.functional as F
 
 from cascades.config import AblationConfig, DEFAULT_CONFIG
 from cascades.math_ops import deal_heat_kernel_filter as _deal_filter_lib
+from cascades.math_ops import gqa_precondition_gradient
+from cascades.math_ops import soft_ear
 
 
 # ---------------------------------------------------------------------------
@@ -165,13 +172,23 @@ def _deal_filter(grad, quant_noise_std, config: AblationConfig):
 
 
 def _cllora_reassign(grad, null_sketch, config: AblationConfig):
-    """CL-LoRA EAR gradient reassignment if enabled."""
+    """CL-LoRA EAR gradient reassignment if enabled.
+
+    v10: Uses Tikhonov-regularized soft-EAR when config.enable_soft_ear
+    is True. This replaces the hard 1% cutoff with a smooth geometric
+    bridging function that naturally dampens as free space → 0.
+    """
     if not config.enable_cllora_reassign or null_sketch is None:
         return grad
     Q, _ = torch.linalg.qr(null_sketch)
     occupied = Q @ (Q.T @ grad)
     free = grad - occupied
 
+    if config.enable_soft_ear:
+        # v10: Tikhonov-regularized smooth reassignment
+        return soft_ear(grad, free, gamma=config.ear_gamma)
+
+    # Legacy hard-cutoff EAR (v9 fallback)
     grad_energy = grad.norm()
     free_energy = free.norm()
     if grad_energy > 1e-8 and free_energy > 1e-8:
@@ -257,6 +274,25 @@ class CASCADESAdapter(nn.Module):
             x, self.V_shared, self.U_shared, getattr(self, 'gate_proj', None)
         )
 
+    def cfg_boost(self, x: torch.Tensor, lambda_cfg: float = 1.5) -> torch.Tensor:
+        """v10: Subspace-Contrastive Decoding (adapter-level CFG).
+
+        During inference, scale the adapter contribution by λ_cfg > 1.0 to
+        amplify the reasoning patterns stored in the Stiefel manifold,
+        overpowering the base model's conversational prior ("Certainly!").
+
+        This is conceptually Classifier-Free Guidance at the adapter level:
+            logits_final = logits_base + λ_cfg × adapter_output
+
+        Args:
+            x:          Input hidden states.
+            lambda_cfg: CFG strength. 1.0 = neutral, 1.5-2.0 = strong steering.
+
+        Returns:
+            Boosted adapter output.
+        """
+        return lambda_cfg * self.forward(x)
+
     def streaming_paca_mask(
         self, grad_U: torch.Tensor, grad_V: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -306,6 +342,14 @@ class CASCADESAdapter(nn.Module):
             grad_V, self.V_shared.grad = self.V_shared.grad.clone(), None
 
             self.step_counter += 1
+
+            # 1.5. v10: GQA-aware metric preconditioning
+            # For K/V projections, scale gradients by 1/√(H_q/H_kv) to
+            # counteract fan-out inflation before entering the manifold.
+            gqa_ratio = getattr(self, 'gqa_ratio', cfg.gqa_ratio)
+            if gqa_ratio > 1.0:
+                grad_U = gqa_precondition_gradient(grad_U, gqa_ratio)
+                grad_V = gqa_precondition_gradient(grad_V, gqa_ratio)
 
             # Riemannian freeze: bypass EMA decay and retraction for unrouted experts
             if grad_U.norm() < 1e-8 and grad_V.norm() < 1e-8:
@@ -381,12 +425,33 @@ class CASCADESAdapter(nn.Module):
                                 f"{self.U_shared.shape[1] - n_dead + 1})"
                             )
 
-                            # Extract strongest un-represented gradient direction
-                            u_new = grad_U.mean(dim=1)
-                            u_new = u_new - self.U_shared @ (
-                                self.U_shared.T @ u_new
-                            )  # Gram-Schmidt
-                            u_new = u_new / (u_new.norm() + 1e-8)
+                            # v10: Principal Tangent Expansion
+                            # Instead of stochastic mini-batch mean (causes
+                            # expansion shock), use power iteration on the
+                            # historical EAR sketch to find the dominant
+                            # missing structural dimension — noise-free.
+                            S = self.streaming_sketch_U
+                            U = self.U_shared
+
+                            if cfg.enable_principal_expansion and S.norm() > 1e-6:
+                                u_new = torch.randn(
+                                    U.shape[0], 1,
+                                    device=U.device, dtype=U.dtype,
+                                )
+                                for _ in range(3):  # 3 iterations → dominant eigenvector
+                                    # Project away from occupied space (I - U U^T)
+                                    u_new = u_new - U @ (U.T @ u_new)
+                                    # Apply historical covariance (S S^T)
+                                    u_new = S @ (S.T @ u_new)
+                                    # Re-orthogonalize
+                                    u_new = u_new - U @ (U.T @ u_new)
+                                    u_new = u_new / (u_new.norm() + 1e-8)
+                                u_new = u_new.squeeze()
+                            else:
+                                # Fallback: stochastic gradient direction (v9)
+                                u_new = grad_U.mean(dim=1)
+                                u_new = u_new - U @ (U.T @ u_new)
+                                u_new = u_new / (u_new.norm() + 1e-8)
 
                             v_new = grad_V.mean(dim=0)
                             v_new = v_new - (v_new @ self.V_shared.T) @ self.V_shared
@@ -494,6 +559,29 @@ class CASCADESLinear(nn.Module):
         )
         adapt_out = self.adapter(x)
         # Ensure adapter output dtype matches base output (prevents SDPA mismatch)
+        return base_out + 0.1 * adapt_out.to(base_out.dtype)
+
+    def forward_with_cfg(self, x: torch.Tensor, lambda_cfg: float = 1.5,
+                         *args, **kwargs) -> torch.Tensor:
+        """v10: Forward pass with adapter-level Classifier-Free Guidance.
+
+        Multiplies the adapter contribution by λ_cfg during inference
+        to steer away from the base model's conversational prior.
+        Use during evaluation/generation only — not training.
+
+        Args:
+            x:          Input tensor.
+            lambda_cfg: CFG boost strength (1.5 default, 1.0 = neutral).
+        """
+        base_out = (
+            self.base_layer(x, *args, **kwargs)
+            if not isinstance(self.base_layer, nn.Linear)
+            else self.base_layer(x)
+        )
+        if self.is_critical and hasattr(self.adapter, 'cfg_boost'):
+            adapt_out = self.adapter.cfg_boost(x, lambda_cfg=lambda_cfg)
+        else:
+            adapt_out = self.adapter(x)
         return base_out + 0.1 * adapt_out.to(base_out.dtype)
 
     def promote(self, rank: int = 8) -> bool:

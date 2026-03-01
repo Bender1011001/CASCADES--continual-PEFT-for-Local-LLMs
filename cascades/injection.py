@@ -153,6 +153,10 @@ def inject_cascades(
     Replaces target linear layers with CASCADESLinear wrappers.
     Critical layers get full CASCADESAdapter; non-critical get FunLoRA_Adapter.
 
+    v10: Auto-detects GQA broadcast ratio from model.config and sets
+    per-adapter gqa_ratio for K/V projections, enabling the GQA-aware
+    metric preconditioning that resolves the 8B scaling paradox.
+
     Args:
         model: The HuggingFace model to inject into.
         rank: Stiefel manifold rank for critical adapters.
@@ -165,6 +169,16 @@ def inject_cascades(
     """
     if target_modules is None:
         target_modules = ["q_proj", "v_proj", "up_proj", "down_proj"]
+
+    # v10: Auto-detect GQA broadcast ratio from model config
+    num_q_heads = getattr(getattr(model, 'config', None), 'num_attention_heads', 1)
+    num_kv_heads = getattr(getattr(model, 'config', None), 'num_key_value_heads', num_q_heads)
+    gqa_ratio = num_q_heads / max(num_kv_heads, 1)
+    if gqa_ratio > 1.0:
+        print(f"v10 GQA detected: {num_q_heads}Q / {num_kv_heads}KV = {gqa_ratio:.1f}x broadcast ratio")
+
+    # Substrings that identify K/V projections (receive GQA preconditioning)
+    kv_proj_names = ["k_proj", "v_proj"]
 
     adapters_critical: list[CASCADESAdapter] = []
     adapters_funlora: list[FunLoRA_Adapter] = []
@@ -188,6 +202,12 @@ def inject_cascades(
                     module, rank=rank, is_critical=is_critical, config=config
                 )
                 new_module = new_module.to(module.weight.device)
+
+                # v10: Set per-adapter GQA ratio for K/V projections
+                if is_critical and gqa_ratio > 1.0:
+                    is_kv = any(kv in name for kv in kv_proj_names)
+                    new_module.adapter.gqa_ratio = gqa_ratio if is_kv else 1.0
+
                 setattr(parent, child_name, new_module)
 
                 if is_critical:

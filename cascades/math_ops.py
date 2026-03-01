@@ -11,6 +11,70 @@ import torch.nn.functional as F
 
 
 # ---------------------------------------------------------------------------
+# v10: GQA-Aware Metric Preconditioning (§7 — resolves 8B GQA Paradox)
+# ---------------------------------------------------------------------------
+
+def gqa_precondition_gradient(
+    grad: torch.Tensor,
+    gqa_ratio: float = 1.0,
+) -> torch.Tensor:
+    """Precondition K/V gradients to counteract GQA fan-out inflation.
+
+    In GQA, K/V heads service multiple Q heads. During backprop, the resulting
+    gradient norm for K/V is inflated by the broadcast ratio γ = H_q / H_kv.
+    Projecting this asymmetric energy into an isotropic Stiefel tangent space
+    warps the tangent vector, pushing QR retraction off the optimal geodesic.
+
+    Fix: scale by 1/√γ before GORP EMA and tangent projection to restore
+    geometric isotropy.
+
+    Args:
+        grad:      Raw Euclidean gradient for a K or V projection.
+        gqa_ratio: H_q / H_kv (e.g. 8 for 1:8 GQA). Set to 1.0 for MHA.
+
+    Returns:
+        Preconditioned gradient with restored isotropy.
+    """
+    if gqa_ratio > 1.0:
+        return grad / math.sqrt(gqa_ratio)
+    return grad
+
+
+# ---------------------------------------------------------------------------
+# v10: Tikhonov-Regularized Soft-EAR (§3.3 — smooth gradient reassignment)
+# ---------------------------------------------------------------------------
+
+def soft_ear(
+    grad: torch.Tensor,
+    free_component: torch.Tensor,
+    gamma: float = 1e-4,
+) -> torch.Tensor:
+    """Tikhonov-regularized smooth Energy-Accounted Reassignment.
+
+    Replaces the hard cutoff `if free_norm < 1e-2 * grad_norm` with a smooth
+    geometric bridging function:
+
+        g_EAR = (‖g‖ / √(‖g_⊥‖² + γ²)) · g_⊥
+
+    As ‖g_⊥‖ → 0, the multiplier smoothly saturates at ‖g‖/γ instead of
+    causing either runaway amplification (hard EAR) or a discontinuous jump
+    (cutoff EAR). γ should be tied to the quantization noise floor ε_quant.
+
+    Args:
+        grad:           Original gradient (for norm reference only).
+        free_component: g_⊥ = (I - P) g, already projected away from occupied space.
+        gamma:          Tikhonov damping factor (default: 1e-4, ≈ 0.1 × ε_quant).
+
+    Returns:
+        Smoothly-scaled free component with bounded multiplier.
+    """
+    free_norm = free_component.norm()
+    grad_norm = grad.norm()
+    multiplier = grad_norm / torch.sqrt(free_norm ** 2 + gamma ** 2)
+    return multiplier * free_component
+
+
+# ---------------------------------------------------------------------------
 # A. Stiefel manifold: Riemannian gradient + QR retraction (StelLA, §3.1)
 # ---------------------------------------------------------------------------
 

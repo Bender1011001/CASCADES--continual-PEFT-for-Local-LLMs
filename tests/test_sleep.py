@@ -187,7 +187,11 @@ class TestSVDConsolidation:
 
 class TestCrossAdapterDedup:
     def test_identical_cores_merged(self):
-        """Two adapters with identical cores should be detected as duplicates."""
+        """Two adapters with identical ambient representations should be detected.
+
+        v10: Ambient trace dedup compares W = U Λ V^T in the ambient space,
+        so adapters must share the same Stiefel bases AND cores to be detected.
+        """
         engine = SleepConsolidation(SleepConfig(
             verbose=False,
             enable_svd_consolidation=False,
@@ -197,7 +201,9 @@ class TestCrossAdapterDedup:
         ))
 
         adapters = make_adapters(2, rank=4)
-        # Make them identical
+        # Make them identical in ambient space: same bases AND same cores
+        adapters[1].U_shared.data = adapters[0].U_shared.data.clone()
+        adapters[1].V_shared.data = adapters[0].V_shared.data.clone()
         adapters[1].liquid_core.core_pool.data = adapters[0].liquid_core.core_pool.data.clone()
 
         stats = engine.run(adapters, task_id=0)

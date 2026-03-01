@@ -208,63 +208,87 @@ class SleepConsolidation:
     @torch.no_grad()
     def _cross_adapter_dedup(self, adapters: list) -> int:
         """Phase 2: Detect duplicate structure across adapters at
-        different model layers.
+        different model layers using ambient-space similarity.
 
-        If two adapters have very similar mean cores (high cosine
-        similarity), merge them by averaging and distributing. This is
-        like the brain consolidating overlapping episodic memories into
-        shared semantic knowledge during REM sleep.
+        v10 FIX: The old implementation compared flattened cores directly,
+        which is geometrically invalid — cores at different layers live in
+        different Stiefel coordinate frames (U_a, V_a vs U_b, V_b).
+        Two *identical* ambient representations with different bases
+        would yield cosine_sim ≈ 0.
+
+        Fix: Compute the true ambient inner product via the cyclic property
+        of the trace:
+            ⟨W_A, W_B⟩ = Tr(Λ_A^T (U_A^T U_B) Λ_B (V_B V_A^T))
+
+        This is O(r³) and never instantiates the d×d ambient matrices.
+        Before merging, we project core_b into core_a's coordinate system
+        via the basis overlap matrices M_U and M_V.
         """
         merged = 0
         threshold = self.config.dedup_cosine_threshold
 
-        # Collect mean cores as flattened vectors
-        adapter_cores = []
+        # Collect adapters with valid liquid cores
+        adapter_entries = []
         for i, adapter in enumerate(adapters):
             if not hasattr(adapter, "liquid_core"):
                 continue
+            if not hasattr(adapter, "U_shared") or not hasattr(adapter, "V_shared"):
+                continue
             mean_core = adapter.liquid_core.core_pool.mean(dim=0)  # (r, r)
-            flat = mean_core.flatten()
-            norm = flat.norm()
-            if norm > 1e-8:
-                adapter_cores.append((i, adapter, flat / norm, mean_core))
+            if mean_core.norm() > 1e-8:
+                adapter_entries.append((i, adapter, mean_core))
 
-        if len(adapter_cores) < 2:
+        if len(adapter_entries) < 2:
             return 0
 
-        # Pairwise cosine similarity (only check neighbors to avoid O(n²))
         seen_merged = set()
-        for idx in range(len(adapter_cores) - 1):
-            i, adapter_a, flat_a, core_a = adapter_cores[idx]
-            j, adapter_b, flat_b, core_b = adapter_cores[idx + 1]
+        for idx in range(len(adapter_entries) - 1):
+            i, adapter_a, core_a = adapter_entries[idx]
+            j, adapter_b, core_b = adapter_entries[idx + 1]
 
             if i in seen_merged or j in seen_merged:
                 continue
 
-            # Only compare adapters with same rank
+            # Only compare adapters with the same rank AND compatible dims
             if core_a.shape != core_b.shape:
                 continue
+            if adapter_a.U_shared.shape != adapter_b.U_shared.shape:
+                continue
 
-            cosine_sim = (flat_a * flat_b).sum().item()
+            # Compute basis overlap matrices — O(d × r²)
+            M_U = adapter_a.U_shared.T @ adapter_b.U_shared  # (r, r)
+            M_V = adapter_b.V_shared @ adapter_a.V_shared.T  # (r, r)
+
+            # Ambient inner product via cyclic trace — O(r³)
+            ambient_dot = torch.trace(core_a.T @ M_U @ core_b @ M_V)
+
+            # Ambient norms (also via trace: ‖W‖² = Tr(Λ^T Λ) since U,V orthonormal)
+            norm_a = core_a.norm()
+            norm_b = core_b.norm()
+
+            cosine_sim = (ambient_dot / (norm_a * norm_b + 1e-8)).item()
 
             if cosine_sim > threshold:
-                # Merge: average the cores and distribute to both
-                avg_core = (core_a + core_b) / 2
+                # Project core_b into core_a's coordinate system before merge
+                core_b_in_a = M_U @ core_b @ M_V
+
                 for k in range(adapter_a.liquid_core.core_pool.shape[0]):
                     frac_a = adapter_a.liquid_core.core_pool[k]
                     adapter_a.liquid_core.core_pool.data[k] = (
-                        0.7 * frac_a + 0.3 * avg_core
+                        0.7 * frac_a + 0.3 * core_b_in_a
                     )
                 for k in range(adapter_b.liquid_core.core_pool.shape[0]):
                     frac_b = adapter_b.liquid_core.core_pool[k]
+                    # Project core_a into core_b's coordinate system
+                    core_a_in_b = M_U.T @ core_a @ M_V.T
                     adapter_b.liquid_core.core_pool.data[k] = (
-                        0.7 * frac_b + 0.3 * avg_core
+                        0.7 * frac_b + 0.3 * core_a_in_b
                     )
                 seen_merged.update({i, j})
                 merged += 1
 
                 if self.config.verbose:
-                    print(f"  🔗 Cross-adapter merge: adapters {i}↔{j} "
+                    print(f"  🔗 Ambient merge: adapters {i}↔{j} "
                           f"(cosine={cosine_sim:.4f})")
 
         return merged

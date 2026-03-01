@@ -37,6 +37,18 @@ class AblationConfig:
     # Intersection D: FunLoRA rank-1 for non-critical layers
     enable_funlora: bool = True
 
+    # --- v10 advancements ---
+    # GQA-aware metric preconditioning: H_q / H_kv ratio (auto-detected)
+    gqa_ratio: float = 1.0
+    # Tikhonov damping for smooth EAR (prevents noise amplification)
+    ear_gamma: float = 1e-4
+    # Use smooth Tikhonov EAR instead of hard 1% cutoff
+    enable_soft_ear: bool = True
+    # Use power-iteration on EAR sketch for rank expansion (vs stochastic)
+    enable_principal_expansion: bool = True
+    # Adapter-level CFG lambda for decoding (1.0 = no boost)
+    cfg_lambda: float = 1.5
+
 
 # Convenience instance with all components enabled (production default)
 DEFAULT_CONFIG = AblationConfig()
