@@ -349,9 +349,9 @@ def evaluate_generative(
         containment_match_rate, samples evaluated, and per-sample details.
     """
     files = [
-        "data/task0_logic_cot.jsonl",
-        "data/task1_decomp_cot.jsonl",
-        "data/task2_action_cot.jsonl",
+        "data/task0_gsm8k_cot.jsonl",
+        "data/task1_arc_cot.jsonl",
+        "data/task2_csqa_cot.jsonl",
     ]
     file_path = files[task_number % len(files)]
 

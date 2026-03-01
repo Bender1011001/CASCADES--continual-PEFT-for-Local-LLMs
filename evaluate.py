@@ -44,9 +44,9 @@ from cascades.eval import (
 def load_task_data(task_number: int, max_samples: int = 5) -> list:
     """Load samples from a task JSONL file."""
     files = [
-        "data/task0_logic_cot.jsonl",
-        "data/task1_decomp_cot.jsonl",
-        "data/task2_action_cot.jsonl",
+        "data/task0_gsm8k_cot.jsonl",
+        "data/task1_arc_cot.jsonl",
+        "data/task2_csqa_cot.jsonl",
     ]
     path = Path(files[task_number % len(files)])
     if not path.exists():
@@ -108,7 +108,7 @@ def run_diagnostic(
 ):
     """Run generation diagnostic on a single task, testing all prompt modes."""
     samples = load_task_data(task_number, max_samples)
-    task_names = ["Logic (task0)", "Decomposition (task1)", "Action Planning (task2)"]
+    task_names = ["GSM8K Math (task0)", "ARC Science (task1)", "CommonsenseQA (task2)"]
 
     print(f"\n{'='*80}")
     print(f"  TASK {task_number}: {task_names[task_number]}")

@@ -70,23 +70,25 @@
 
 ```text
 cascades/          → Core library (standalone, 152 unit tests, v10 architecture)
-data/              → Training data (495 zero-shot reasoning examples)
+data/              → Real benchmark data (GSM8K, ARC, CSQA — downloaded via script)
 tests/             → Unit tests (mirror cascades/ structure)
 papers/            → Research papers + reference PDFs
 train.py           → Thin orchestrator (imports from cascades/)
 evaluate.py        → EM diagnostic evaluator
 ```
 
-## Training Data (v9 Data Overhaul)
+## Training Data (v10 Real Benchmarks)
 
-- `data/task0_logic_cot.jsonl` — 159 examples (first-principles logic, math, Fermi estimation)
-- `data/task1_decomp_cot.jsonl` — 184 examples (anti-sycophancy, critical analysis)
-- `data/task2_action_cot.jsonl` — 152 examples (Python algorithmic synthesis)
+- `data/task0_gsm8k_cot.jsonl` — 150 examples (GSM8K grade-school math, natural CoT from dataset)
+- `data/task1_arc_cot.jsonl` — 150 examples (ARC-Challenge science reasoning, generated CoT)
+- `data/task2_csqa_cot.jsonl` — 150 examples (CommonsenseQA, generated CoT)
+- `download_real_data.py` — Script to download/convert from HuggingFace
 
 ## Build / Verify
 
 ```bash
 pytest tests/ -v --tb=short
+python download_real_data.py --num_samples 150
 python train.py --eval_em
-python evaluate.py --weights cascades_v9_colab_weights.pt --fast --max_samples 10
+python evaluate.py --weights cascades_v10_colab_weights.pt --fast --max_samples 10
 ```

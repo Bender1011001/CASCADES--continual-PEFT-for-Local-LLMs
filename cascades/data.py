@@ -33,15 +33,15 @@ from cascades.eval import STRUCTURED_SYSTEM_PROMPT
 # ---------------------------------------------------------------------------
 
 TASK_FILES: list[str] = [
-    "data/task0_logic_cot.jsonl",
-    "data/task1_decomp_cot.jsonl",
-    "data/task2_action_cot.jsonl",
+    "data/task0_gsm8k_cot.jsonl",
+    "data/task1_arc_cot.jsonl",
+    "data/task2_csqa_cot.jsonl",
 ]
 
 TASK_NAMES: dict[int, str] = {
-    0: "Task 0 (Logic)",
-    1: "Task 1 (Critical Analysis)",
-    2: "Task 2 (Code)",
+    0: "Task 0 (GSM8K Math)",
+    1: "Task 1 (ARC Science)",
+    2: "Task 2 (CommonsenseQA)",
 }
 
 NUM_TASKS: int = len(TASK_FILES)
