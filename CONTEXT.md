@@ -43,20 +43,21 @@
 
 ## Trap Diary
 
-| Issue                         | Cause                                                | Fix                                          |
-| ----------------------------- | ---------------------------------------------------- | -------------------------------------------- |
-| Double-Optimizer annihilation | U/V in Adam AND manual Riemannian step               | Exclude U/V from Adam                        |
-| EAR-StelLA non-commutativity  | EAR applied before tangent projection                | Tangent first, EAR in tangent space          |
-| Basis-Destruction bug         | QR R-matrix rotates basis columns                    | Counter-rotate historical cores by R         |
-| NaN loss in 4-bit             | fp32/fp16 mixing + large init                        | Scale ×0.01, alpha=0.1, clip 1.0             |
-| EM gap (0% exact match)       | Model runs out of tokens mid-reasoning               | Increase max_new_tokens, suppress tool_call  |
-| Optimizer state corruption    | Full state flush on rank contraction                 | Surgical zeroing via `_last_dead_idx`        |
-| Frankenstein train.py         | 600 lines of duplicate classes/funcs                 | Thin orchestrator importing from library     |
-| Cross-adapter dedup invalid   | Flattened core cosine in different coordinate frames | Ambient trace projection via cyclic trace    |
-| EAR noise amplification       | Hard 1% cutoff → discontinuous gradient              | Tikhonov smooth regularization (soft-EAR)    |
-| 8B GQA scaling paradox        | K/V gradient inflation from fan-out                  | Scale by 1/√(H_q/H_kv) before Stiefel        |
-| Expansion shock               | Stochastic mini-batch init on revival                | Power iteration on EAR sketch (noise-free)   |
-| Negative BWT on real data     | EAR sketch decays old-task info, no cross-task accum | Frozen null-space snapshots at task boundary |
+| Issue                         | Cause                                                | Fix                                                           |
+| ----------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- |
+| Double-Optimizer annihilation | U/V in Adam AND manual Riemannian step               | Exclude U/V from Adam                                         |
+| EAR-StelLA non-commutativity  | EAR applied before tangent projection                | Tangent first, EAR in tangent space                           |
+| Basis-Destruction bug         | QR R-matrix rotates basis columns                    | Counter-rotate historical cores by R                          |
+| NaN loss in 4-bit             | fp32/fp16 mixing + large init                        | Scale ×0.01, alpha=0.1, clip 1.0                              |
+| EM gap (0% exact match)       | Model runs out of tokens mid-reasoning               | Increase max_new_tokens, suppress tool_call                   |
+| Optimizer state corruption    | Full state flush on rank contraction                 | Surgical zeroing via `_last_dead_idx`                         |
+| Frankenstein train.py         | 600 lines of duplicate classes/funcs                 | Thin orchestrator importing from library                      |
+| Cross-adapter dedup invalid   | Flattened core cosine in different coordinate frames | Ambient trace projection via cyclic trace                     |
+| EAR noise amplification       | Hard 1% cutoff → discontinuous gradient              | Tikhonov smooth regularization (soft-EAR)                     |
+| 8B GQA scaling paradox        | K/V gradient inflation from fan-out                  | Scale by 1/√(H_q/H_kv) before Stiefel                         |
+| Expansion shock               | Stochastic mini-batch init on revival                | Power iteration on EAR sketch (noise-free)                    |
+| Negative BWT on real data     | EAR sketch decays old-task info, no cross-task accum | Frozen null-space snapshots at task boundary                  |
+| Null-Space geometry bleed     | Prior-task projection applied to Stiefel tangent     | v10.1: Project ambient Euclidean EMA _before_ tangent mapping |
 
 ## Anti-Patterns (DO NOT)
 

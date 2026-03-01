@@ -466,11 +466,21 @@ class CASCADESAdapter(nn.Module):
             self.ema_U.lerp_(grad_U, 1 - self.beta1)
             self.ema_V.lerp_(grad_V, 1 - self.beta1)
 
-            # 5. Map to Stiefel tangent space FIRST (crucial for commutativity)
+            # 4.5. v10.1 Ambient Null-Space Projection
+            # Project Euclidean EMA gradient *before* tangent mapping to prevent
+            # the QR retraction from bleeding the null-space back into the basis.
+            safe_ema_U = self.ema_U.clone()
+            if cfg.enable_coso_nullspace and getattr(self, 'ear_initialized', False):
+                safe_ema_U = _cllora_reassign(
+                    self.ema_U, self.Q_null_U, cfg,
+                    frozen_basis=getattr(self, 'frozen_null_basis', None),
+                )
+
+            # 5. Map to Stiefel tangent space AFTER protection
             sym_U = 0.5 * (
-                self.U_shared.T @ self.ema_U + self.ema_U.T @ self.U_shared
+                self.U_shared.T @ safe_ema_U + safe_ema_U.T @ self.U_shared
             )
-            tangent_U = self.ema_U - self.U_shared @ sym_U
+            tangent_U = safe_ema_U - self.U_shared @ sym_U
 
             sym_V = 0.5 * (
                 self.V_shared @ self.ema_V.T + self.ema_V @ self.V_shared.T
@@ -481,14 +491,10 @@ class CASCADESAdapter(nn.Module):
             if cfg.enable_coso_nullspace:
                 self.streaming_ear_update(tangent_U)
 
-                if self.ear_initialized:
-                    free_U = _cllora_reassign(
-                        tangent_U, self.Q_null_U, cfg,
-                        frozen_basis=self.frozen_null_basis,
-                    )
-
-                    n_orig, n_free = tangent_U.norm(), free_U.norm()
-                    n_occ = (tangent_U - free_U).norm()
+                if getattr(self, 'ear_initialized', False):
+                    n_orig = self.ema_U.norm()
+                    n_free = safe_ema_U.norm()
+                    n_occ = (self.ema_U - safe_ema_U).norm()
 
                     # Autopoiesis: dynamic rank recycling
                     # Instead of physically expanding tensors (which creates new
@@ -496,7 +502,7 @@ class CASCADESAdapter(nn.Module):
                     # recycle a dead/zeroed dimension from a previous contraction.
                     n_dead = getattr(self, '_dead_ranks', 0)
                     if (
-                        n_free / (n_occ + n_free + 1e-8) < 0.10
+                        n_free / (n_occ + n_free + 1e-8) < 0.20
                         and n_dead > 0
                     ):
                         with torch.no_grad():
@@ -551,7 +557,7 @@ class CASCADESAdapter(nn.Module):
                             # Tangents stay the same shape — no padding needed
 
                     if n_orig > 1e-8 and n_free > 1e-8:
-                        tangent_U = free_U * min(n_orig / n_free, 5.0)
+                        tangent_U = tangent_U * min(n_orig / n_free, 5.0)
 
                     # Re-project to correct numerical drift from EAR
                     sym_free_U = 0.5 * (
