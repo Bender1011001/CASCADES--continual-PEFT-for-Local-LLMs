@@ -43,10 +43,10 @@ python reproduce_the_breakthrough.py
 
 ```bash
 # Full training + exact match evaluation
-python cascades_exp/hf_cascades_reasoning.py --eval_em
+python train.py --eval_em
 
 # Custom model / seed
-python cascades_exp/hf_cascades_reasoning.py \
+python train.py \
     --model_id "p-e-w/Qwen3-4B-Instruct-2507-heretic" \
     --eval_em --seed 42
 ```
@@ -112,6 +112,10 @@ match = answers_match("42", "$42$", level="normalized")  # True
 ## 📁 Project Structure
 
 ```text
+train.py                   # v9 Pro training pipeline
+evaluate.py                # EM diagnostic evaluator
+reproduce_the_breakthrough.py
+
 cascades/                  # Installable library
 ├── adapters.py            # CASCADESAdapter, CASCADESLinear, FunLoRA, ResonantCore
 ├── config.py              # AblationConfig frozen dataclass (8 flags)
@@ -119,26 +123,16 @@ cascades/                  # Installable library
 ├── eval.py                # Generative evaluation + answer matching
 ├── math_ops.py            # Riemannian gradient, QR retraction, EAR, DEAL, SVC
 ├── data.py                # Task prompts + DataLoader creation
-└── metrics.py             # Average accuracy, BWT, forward transfer
+├── metrics.py             # Average accuracy, BWT, forward transfer
+└── sleep.py               # Bio-inspired sleep consolidation
 
-cascades_exp/              # Experiment scripts
-├── hf_cascades_reasoning.py   # v9 Pro main training pipeline
-└── eval_exact_match.py        # Legacy exact match evaluation
+data/                      # Training data (495 examples)
+├── task0_logic_cot.jsonl   # 159 logic/math reasoning
+├── task1_decomp_cot.jsonl  # 184 critical analysis
+└── task2_action_cot.jsonl  # 152 algorithmic synthesis
 
-tests/                     # 129 CPU-only tests
-├── test_adapters.py       # v5 adapter tests (legacy)
-├── test_adapters_v9.py    # v9 library adapter tests
-├── test_eval.py           # Evaluation pipeline tests
-├── test_math.py           # Riemannian math tests
-├── test_data.py           # Data module tests
-└── test_metrics.py        # CL metrics tests
-
-papers/                    # Research papers
-├── CASCADES_v9_Final_Paper.md
-└── CASCADES_v9_Plain_Language.md
-
-docs/                      # Historical documentation
-└── TUNING_WALKTHROUGH_v3.1_to_v5.md
+tests/                     # Unit tests
+papers/                    # Research papers + reference PDFs
 ```
 
 ## 🧠 Core Architecture

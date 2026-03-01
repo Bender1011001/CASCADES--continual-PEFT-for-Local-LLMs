@@ -1,5 +1,0 @@
-Version,Key change,Proxy Avg Accuracy,BWT,VRAM
-v3.1 (baseline),starting point,~12.15%,varies,<8GB
-v3.1 tuned,"D-MoLE 0.15, FunLoRA var 0.05",~13.79%,~-3.41%,<8GB
-v4,"math + ""no SVD"" coordinate filter",~8.28%,~-1.48%,<8GB
-v5,TAG + ARR,~5.41%,~-0.93%,<8GB

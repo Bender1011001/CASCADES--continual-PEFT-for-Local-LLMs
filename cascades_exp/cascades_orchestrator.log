@@ -1,9 +1,0 @@
-Running ablation: Full_CASCADES_v8
-Finished Full_CASCADES_v8 in 18.06s
-Running ablation: No_DMoLE
-Finished No_DMoLE in 18.35s
-Running ablation: No_Autopoiesis_EAR
-Finished No_Autopoiesis_EAR in 17.93s
-Running ablation: Baseline_LoRA
-Finished Baseline_LoRA in 18.29s
-Benchmarking completely automatically finished. Suite saved to cascades_final_benchmark_suite.log.

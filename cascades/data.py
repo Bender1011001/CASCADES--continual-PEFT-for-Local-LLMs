@@ -1,4 +1,4 @@
-"""
+﻿"""
 Unified data module for CASCADES continual-learning experiments.
 
 ALL methods (CASCADES, LoRA baseline, ablations) must use these functions to

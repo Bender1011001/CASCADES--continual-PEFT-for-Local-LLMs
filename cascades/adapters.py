@@ -1,5 +1,5 @@
-"""
-CASCADES v9 core adapter modules — extracted from cascades_exp/hf_cascades_reasoning.py.
+﻿"""
+CASCADES v9 core adapter modules — extracted from train.py.
 
 This module contains the complete CASCADES v9 Pro architecture:
   - FunLoRA_Activation: Custom autograd activation with analytical derivatives

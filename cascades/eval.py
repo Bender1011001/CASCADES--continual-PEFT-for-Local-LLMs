@@ -1,4 +1,4 @@
-"""
+﻿"""
 CASCADES Generative Evaluation Module — Structured answer extraction and flexible matching.
 
 This module bridges the gap between high proxy accuracy (exp(-loss)) and exact match (EM)
@@ -349,9 +349,9 @@ def evaluate_generative(
         containment_match_rate, samples evaluated, and per-sample details.
     """
     files = [
-        "cascades_exp/task0_logic_cot.jsonl",
-        "cascades_exp/task1_decomp_cot.jsonl",
-        "cascades_exp/task2_action_cot.jsonl",
+        "data/task0_logic_cot.jsonl",
+        "data/task1_decomp_cot.jsonl",
+        "data/task2_action_cot.jsonl",
     ]
     file_path = files[task_number % len(files)]
 
