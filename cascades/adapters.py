@@ -174,24 +174,39 @@ def _deal_filter(grad, quant_noise_std, config: AblationConfig):
 def _cllora_reassign(grad, null_sketch, config: AblationConfig, frozen_basis=None):
     """CL-LoRA EAR gradient reassignment if enabled.
 
-    v10: Uses Tikhonov-regularized soft-EAR when config.enable_soft_ear
-    is True. This replaces the hard 1% cutoff with a smooth geometric
-    bridging function that naturally dampens as free space → 0.
-
-    v10 BWT fix: Also projects out frozen_basis directions accumulated
-    from completed tasks, preventing gradient interference with prior
-    task knowledge.
+    v10.2 BWT Fix: Strict Orthogonal Lockdown.
+    Concatenates the streaming task null-space and frozen_basis prior-task
+    directions, computes a strictly orthogonal QR factorization, and applies
+    a single robust Householder projection to avoid numerical leakage.
     """
-    if not config.enable_cllora_reassign or null_sketch is None:
+    if not config.enable_cllora_reassign:
         return grad
-    Q, _ = torch.linalg.qr(null_sketch)
-    occupied = Q @ (Q.T @ grad)
-    free = grad - occupied
 
-    # v10 BWT fix: Also remove frozen (prior-task) directions
+    protected_dirs = []
+    if null_sketch is not None:
+        protected_dirs.append(null_sketch)
     if frozen_basis is not None and frozen_basis.shape[1] > 0:
-        frozen_proj = frozen_basis @ (frozen_basis.T @ free)
-        free = free - frozen_proj
+        protected_dirs.append(frozen_basis)
+
+    if not protected_dirs:
+        return grad
+
+    # Build unified protection space
+    W = torch.cat(protected_dirs, dim=1)
+    
+    # Strict orthogonalization
+    Q, R = torch.linalg.qr(W)
+    
+    # Numerical stability filter: drop degenerate columns from the unified space
+    col_norms = R.diag().abs()
+    Q_strict = Q[:, col_norms > 1e-6]
+
+    if Q_strict.shape[1] == 0:
+        return grad
+
+    # Project out the perfectly orthogonal unified basis
+    occupied = Q_strict @ (Q_strict.T @ grad)
+    free = grad - occupied
 
     if config.enable_soft_ear:
         # v10: Tikhonov-regularized smooth reassignment
@@ -256,10 +271,11 @@ class CASCADESAdapter(nn.Module):
             nn.init.constant_(self.gate_proj.bias, 1.0)  # start open
 
         # Streaming dual-EMA PaCA (temporal causal masking)
-        self.beta_fast = 0.99     # ~100 step local trajectory horizon
-        self.beta_slow = 0.9998   # ~5000 step structural consensus horizon
-        self.tau_conflict = -0.1  # Conflict threshold
-
+        # PaCA EMA trackers and causal event horizons (slower for v10.2 BWT)
+        self.beta_fast = getattr(config, 'beta_fast', 0.95)
+        self.beta_slow = getattr(config, 'beta_slow', 0.999)
+        self.tau_conflict = getattr(config, 'tau_conflict', -0.1)  # Conflict threshold
+        
         self.register_buffer('ema_fast_U', torch.zeros(out_features, rank))
         self.register_buffer('ema_slow_U', torch.zeros(out_features, rank))
         self.register_buffer('ema_fast_V', torch.zeros(rank, in_features))
@@ -357,24 +373,31 @@ class CASCADESAdapter(nn.Module):
             if S.norm() < 1e-8:
                 return
 
-            # Extract occupied directions from the sketch covariance
-            C = S.T @ S  # (rank, rank)
+            # v10.2 BWT fix: Normalized Covariance
+            # Normalize sketch columns so covariance elements are strictly bounded [-1, 1].
+            # This makes the eigenvalues represent pure structural variance percentage,
+            # untainted by extreme gradient magnitude spikes.
+            S_norm = S / (S.norm(dim=0, keepdim=True) + 1e-8)
+
+            # Extract occupied directions from the normalized correlation matrix
+            C = S_norm.T @ S_norm  # (rank, rank)
             eigvals, eigvecs = torch.linalg.eigh(C)
 
-            # Keep directions with significant energy (top eigenvalues)
-            total_energy = eigvals.sum()
-            if total_energy < 1e-10:
+            # Keep directions with significant percentage of structural variance
+            total_variance = eigvals.sum()
+            if total_variance < 1e-6:
                 return
 
-            # Keep eigenvectors capturing ≥5% each of total energy
-            keep_mask = eigvals / total_energy > 0.05
+            # Keep eigenvectors capturing >= 5% of variance
+            keep_mask = eigvals / total_variance > 0.05
             if not keep_mask.any():
-                # At least keep the top direction
+                # At least keep the top structural direction
                 keep_mask[-1] = True
 
             kept_vecs = eigvecs[:, keep_mask]  # (rank, k)
 
             # Project to ambient space: occupied directions = S @ eigvecs
+            # (We use the original un-normalized S here to recover true vectors)
             new_dirs = S @ kept_vecs  # (d_out, k)
 
             # QR to get orthonormal columns

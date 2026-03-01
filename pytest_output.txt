@@ -1,0 +1,57 @@
+C:\Users\admin\AppData\Roaming\Python\Python313\site-packages\pytest_asyncio\plugin.py:252: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts =============================
+platform win32 -- Python 3.13.5, pytest-8.3.4, pluggy-1.5.0 -- C:\ProgramData\anaconda3\python.exe
+cachedir: .pytest_cache
+rootdir: E:\CASCADES--continual-PEFT-for-Local-LLMs
+configfile: pyproject.toml
+plugins: anyio-4.11.0, Faker-37.11.0, asyncio-1.2.0, cov-7.0.0, langsmith-0.6.6, mock-3.15.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 31 items
+
+tests/test_adapters_v9.py::TestFunLoRAActivation::test_forward_formula PASSED [  3%]
+tests/test_adapters_v9.py::TestFunLoRAActivation::test_gradient_flows PASSED [  6%]
+tests/test_adapters_v9.py::TestFunLoRA::test_output_shape PASSED         [  9%]
+tests/test_adapters_v9.py::TestFunLoRA::test_dtype_preservation_float16 PASSED [ 12%]
+tests/test_adapters_v9.py::TestFunLoRA::test_nonzero_output PASSED       [ 16%]
+tests/test_adapters_v9.py::TestFunLoRA::test_param_count PASSED          [ 19%]
+tests/test_adapters_v9.py::TestResonantCore::test_output_shape PASSED    [ 22%]
+tests/test_adapters_v9.py::TestResonantCore::test_core_pool_initialized_orthogonal PASSED [ 25%]
+tests/test_adapters_v9.py::TestCASCADESAdapter::test_output_shape PASSED [ 29%]
+tests/test_adapters_v9.py::TestCASCADESAdapter::test_output_dtype_float32 PASSED [ 32%]
+tests/test_adapters_v9.py::TestCASCADESAdapter::test_has_gate_when_enabled PASSED [ 35%]
+tests/test_adapters_v9.py::TestCASCADESAdapter::test_no_gate_when_disabled PASSED [ 38%]
+tests/test_adapters_v9.py::TestCASCADESAdapter::test_config_stored PASSED [ 41%]
+tests/test_adapters_v9.py::TestCASCADESAdapter::test_qr_retractable PASSED [ 45%]
+tests/test_adapters_v9.py::TestCASCADESAdapter::test_full_descent_step_no_crash PASSED [ 48%]
+tests/test_adapters_v9.py::TestCASCADESAdapter::test_riemannian_freeze_skips_zero_gradient PASSED [ 51%]
+tests/test_adapters_v9.py::TestCASCADESAdapter::test_streaming_paca_mask_shape FAILED [ 54%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_critical_output_shape PASSED [ 58%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_noncritical_output_shape PASSED [ 61%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_critical_uses_cascades_adapter PASSED [ 64%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_noncritical_uses_funlora PASSED [ 67%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_adapter_contributes PASSED [ 70%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_promote_changes_adapter_type PASSED [ 74%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_promote_idempotent_on_critical PASSED [ 77%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_demote_changes_adapter_type PASSED [ 80%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_demote_idempotent_on_noncritical PASSED [ 83%]
+tests/test_adapters_v9.py::TestCASCADESLinear::test_promote_demote_roundtrip PASSED [ 87%]
+tests/test_adapters_v9.py::TestConfig::test_default_all_enabled PASSED   [ 90%]
+tests/test_adapters_v9.py::TestConfig::test_minimal_all_disabled PASSED  [ 93%]
+tests/test_adapters_v9.py::TestConfig::test_frozen PASSED                [ 96%]
+tests/test_adapters_v9.py::TestConfig::test_custom_config PASSED         [100%]
+
+================================== FAILURES ===================================
+_____________ TestCASCADESAdapter.test_streaming_paca_mask_shape ______________
+tests\test_adapters_v9.py:198: in test_streaming_paca_mask_shape
+    mask_U, mask_V = adapter_default.streaming_paca_mask(grad_U, grad_V)
+cascades\adapters.py:347: in streaming_paca_mask
+    mask_U = torch.sigmoid((sim_U - self.tau_conflict) * 15.0)
+C:\Users\admin\AppData\Roaming\Python\Python313\site-packages\torch\nn\modules\module.py:1928: in __getattr__
+    raise AttributeError(
+E   AttributeError: 'CASCADESAdapter' object has no attribute 'tau_conflict'
+=========================== short test summary info ===========================
+FAILED tests/test_adapters_v9.py::TestCASCADESAdapter::test_streaming_paca_mask_shape - AttributeError: 'CASCADESAdapter' object has no attribute 'tau_conflict'
+======================== 1 failed, 30 passed in 0.67s =========================
