@@ -333,6 +333,7 @@ def batched_autopoiesis_and_svc(
                     if config.enable_coso_nullspace:
                         a.streaming_sketch_U.data[:, dead_idx] = 0.0
                     a._dead_ranks = n_dead + 1
+                    a._last_dead_idx = dead_idx  # For surgical optimizer state cleanup
                     a.contracted_this_step = True
 
         # --- B. SINGULAR VALUE CALIBRATION (SVC) ---

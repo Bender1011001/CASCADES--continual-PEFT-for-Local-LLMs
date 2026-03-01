@@ -14,6 +14,14 @@ from cascades.adapters import (  # noqa: F401
     ResonantCore,
 )
 
+# Data loading
+from cascades.data import (  # noqa: F401
+    NUM_TASKS,
+    TASK_FILES,
+    diagnose_per_example_loss,
+    prepare_data,
+)
+
 # Evaluation
 from cascades.eval import (  # noqa: F401
     answers_match,
@@ -35,3 +43,4 @@ from cascades.injection import (  # noqa: F401
 
 # Sleep consolidation
 from cascades.sleep import SleepConsolidation, SleepConfig  # noqa: F401
+

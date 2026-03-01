@@ -1,124 +1,277 @@
 ﻿"""
 Unified data module for CASCADES continual-learning experiments.
 
-ALL methods (CASCADES, LoRA baseline, ablations) must use these functions to
-ensure a fair, reproducible comparison.  The previous lora_baseline.py used
-different task prompts — that is corrected here.
+Provides:
+  - prepare_data(): Loads CoT JSONL training data with chat-template tokenization
+  - diagnose_per_example_loss(): Per-example loss diagnostic for data analysis
 
-Task structure
---------------
-3 sequential sentiment-classification tasks from 3 distinct domains:
-    Task 0: Product reviews
-    Task 1: Film critiques
-    Task 2: Restaurant reviews
-
-Each sample is a text string that ends with a sentiment label.
-The domain shift is the source of interference that tests forgetting.
+ALL training data paths are relative to the project root.
 """
 
 from __future__ import annotations
 
+import json
+import math
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
+import pandas as pd
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
 
+from cascades.eval import STRUCTURED_SYSTEM_PROMPT
+
 
 # ---------------------------------------------------------------------------
-# Canonical task definitions — do not modify without updating the paper
+# Constants
 # ---------------------------------------------------------------------------
 
-TASK_PROMPTS: dict[int, list[str]] = {
-    0: [  # Product reviews
-        "Review: This product exceeded my expectations. Rating: Positive",
-        "Review: Terrible quality, broke after one day. Rating: Negative",
-        "Review: Amazing value for the price. Rating: Positive",
-        "Review: Would not recommend to anyone. Rating: Negative",
-        "Review: Best purchase I've made this year. Rating: Positive",
-        "Review: Complete waste of money. Rating: Negative",
-    ],
-    1: [  # Film critiques
-        "Film critique: The cinematography was breathtaking. Verdict: Positive",
-        "Film critique: Worst screenplay I've ever seen. Verdict: Negative",
-        "Film critique: Outstanding performances by the entire cast. Verdict: Positive",
-        "Film critique: A boring and predictable storyline. Verdict: Negative",
-        "Film critique: A masterpiece of modern cinema. Verdict: Positive",
-        "Film critique: Completely unwatchable garbage. Verdict: Negative",
-    ],
-    2: [  # Restaurant reviews
-        "Dining experience: The flavors were absolutely divine. Score: Positive",
-        "Dining experience: Food was cold and service was rude. Score: Negative",
-        "Dining experience: Best sushi I've ever had. Score: Positive",
-        "Dining experience: Overpriced and underwhelming. Score: Negative",
-        "Dining experience: A perfect evening of fine dining. Score: Positive",
-        "Dining experience: Found a hair in my soup. Score: Negative",
-    ],
+TASK_FILES: list[str] = [
+    "data/task0_logic_cot.jsonl",
+    "data/task1_decomp_cot.jsonl",
+    "data/task2_action_cot.jsonl",
+]
+
+TASK_NAMES: dict[int, str] = {
+    0: "Task 0 (Logic)",
+    1: "Task 1 (Critical Analysis)",
+    2: "Task 2 (Code)",
 }
 
-NUM_TASKS: int = len(TASK_PROMPTS)
+NUM_TASKS: int = len(TASK_FILES)
 
 
-def get_task_prompts(task_id: int) -> list[str]:
-    """Return the canonical prompt list for a given task.
+# ---------------------------------------------------------------------------
+# A. CoT Data Loader
+# ---------------------------------------------------------------------------
 
-    Args:
-        task_id: Integer in [0, NUM_TASKS).
+class _DynamicSeqDataset(Dataset):
+    """Variable-length sequence dataset with per-sample storage."""
 
-    Returns:
-        List of prompt strings.
+    def __init__(self, ids: list, masks: list, labels: list) -> None:
+        self.ids = ids
+        self.masks = masks
+        self.labels = labels
 
-    Raises:
-        KeyError: If task_id is not defined.
-    """
-    if task_id not in TASK_PROMPTS:
-        raise KeyError(
-            f"task_id={task_id} is not defined. Available: {sorted(TASK_PROMPTS.keys())}"
-        )
-    return TASK_PROMPTS[task_id]
+    def __len__(self) -> int:
+        return len(self.ids)
+
+    def __getitem__(self, idx: int):
+        return self.ids[idx], self.masks[idx], self.labels[idx]
 
 
-def prepare_dataloader(
-    tokenizer: PreTrainedTokenizerBase,
-    task_id: int,
-    batch_size: int = 2,
-    repeat: int = 8,
-    max_length: int = 64,
-    seed: int = 42,
-) -> DataLoader:
-    """Build a shuffled DataLoader for the specified task.
-
-    Prompts are repeated *repeat* times so mini-batch training sees enough
-    examples per epoch.  The seed makes shuffling reproducible.
-
-    Args:
-        tokenizer:  HuggingFace tokenizer.
-        task_id:    Which task (0, 1, 2).
-        batch_size: Samples per mini-batch.
-        repeat:     Number of times to repeat the prompt list.
-        max_length: Tokenizer truncation length.
-        seed:       RNG seed for shuffling.
-
-    Returns:
-        DataLoader yielding (input_ids, attention_mask) pairs.
-    """
-    torch.manual_seed(seed + task_id)
-
-    prompts = get_task_prompts(task_id) * repeat
-    enc = tokenizer(
-        prompts,
-        return_tensors="pt",
-        truncation=True,
-        padding=True,
-        max_length=max_length,
+def _collate_single(batch):
+    """Collate for batch_size=1: wraps lists into tensors."""
+    return (
+        torch.tensor([batch[0][0]]),
+        torch.tensor([batch[0][1]]),
+        torch.tensor([batch[0][2]]),
     )
-    dataset = TensorDataset(enc.input_ids, enc.attention_mask)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 
-def task_domain_name(task_id: int) -> str:
-    """Human-readable domain name for reporting."""
-    names = {0: "Product Reviews", 1: "Film Critiques", 2: "Restaurant Reviews"}
-    return names.get(task_id, f"Task {task_id}")
+def prepare_data(
+    tokenizer: PreTrainedTokenizerBase,
+    task_number: int,
+    base_seed: int = 42,
+    use_system_prompt: bool = True,
+    max_length: int = 1024,
+) -> DataLoader:
+    """Load domain-specific JSONL prompts for CoT reasoning adaptation.
+
+    Applies chat-template tokenization with strict autoregressive masking:
+    prompt tokens are masked with -100 so loss is computed only on the
+    response tokens.
+
+    Args:
+        tokenizer: HuggingFace tokenizer with chat_template support.
+        task_number: Which task (0, 1, 2).
+        base_seed: RNG seed for shuffling.
+        use_system_prompt: If True, includes the structured system prompt
+            to align training format with inference format.
+        max_length: Maximum sequence length (context window).
+
+    Returns:
+        DataLoader yielding (input_ids, attention_mask, labels) triples.
+    """
+    torch.manual_seed(base_seed + task_number)
+
+    file_path = TASK_FILES[task_number % len(TASK_FILES)]
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(
+            f"Missing dataset: {file_path}. "
+            f"Ensure training data exists in data/ directory."
+        )
+
+    df = pd.read_json(file_path, lines=True)
+    input_ids_list, attention_masks_list, labels_list = [], [], []
+
+    for prompt, response in zip(df["prompt"], df["response"]):
+        # Build chat messages with optional system prompt
+        if use_system_prompt:
+            messages = [
+                {"role": "system", "content": STRUCTURED_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+        else:
+            messages = [{"role": "user", "content": prompt}]
+
+        prompt_text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        response_text = response + tokenizer.eos_token
+
+        prompt_tokens = tokenizer(prompt_text, add_special_tokens=False).input_ids
+        response_tokens = tokenizer(response_text, add_special_tokens=False).input_ids
+
+        input_ids = prompt_tokens + response_tokens
+        if len(input_ids) > max_length:
+            input_ids = input_ids[:max_length]
+
+        attention_mask = [1] * len(input_ids)
+
+        # Strict autoregressive masking: loss only on response tokens
+        labels = [-100] * len(prompt_tokens) + response_tokens
+        if len(labels) > max_length:
+            labels = labels[:max_length]
+
+        input_ids_list.append(input_ids)
+        attention_masks_list.append(attention_mask)
+        labels_list.append(labels)
+
+    dataset = _DynamicSeqDataset(input_ids_list, attention_masks_list, labels_list)
+    return DataLoader(dataset, batch_size=1, shuffle=True, collate_fn=_collate_single)
+
+
+# ---------------------------------------------------------------------------
+# B. Per-example loss diagnostic
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def diagnose_per_example_loss(
+    model,
+    tokenizer: PreTrainedTokenizerBase,
+    device: str,
+    seed: int = 42,
+) -> None:
+    """Per-example loss diagnostic — identifies which examples the model
+    learned vs. struggles with.
+
+    Evaluates every example individually, sorts by loss, and prints:
+      - Per-task loss distribution (mean, std, min, max)
+      - Top 10 hardest examples (highest loss)
+      - Top 10 easiest examples (lowest loss)
+      - Response length correlation with loss
+    """
+    model.eval()
+
+    print(f"\n{'=' * 60}")
+    print("PER-EXAMPLE LOSS DIAGNOSTIC")
+    print(f"{'=' * 60}")
+
+    for task_id, file_path in enumerate(TASK_FILES):
+        task_name = TASK_NAMES.get(task_id, f"Task {task_id}")
+
+        if not os.path.exists(file_path):
+            print(f"\n  {task_name}: file not found, skipping")
+            continue
+
+        examples = []
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    examples.append(json.loads(line))
+
+        losses = []
+        for i, ex in enumerate(examples):
+            messages = [
+                {"role": "system", "content": STRUCTURED_SYSTEM_PROMPT},
+                {"role": "user", "content": ex["prompt"]},
+            ]
+            prompt_text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            response_text = ex["response"] + tokenizer.eos_token
+
+            prompt_tokens = tokenizer(prompt_text, add_special_tokens=False).input_ids
+            response_tokens = tokenizer(response_text, add_special_tokens=False).input_ids
+
+            input_ids = prompt_tokens + response_tokens
+            if len(input_ids) > 1024:
+                input_ids = input_ids[:1024]
+
+            attention_mask = [1] * len(input_ids)
+            labels = [-100] * len(prompt_tokens) + response_tokens
+            if len(labels) > 1024:
+                labels = labels[:1024]
+
+            input_ids_t = torch.tensor([input_ids]).to(device)
+            attention_mask_t = torch.tensor([attention_mask]).to(device)
+            labels_t = torch.tensor([labels]).to(device)
+
+            out = model(
+                input_ids=input_ids_t,
+                attention_mask=attention_mask_t,
+                labels=labels_t,
+            )
+
+            losses.append({
+                "idx": i,
+                "loss": out.loss.item(),
+                "prompt": ex["prompt"][:100],
+                "resp_tokens": len(response_tokens),
+                "resp_words": len(ex["response"].split()),
+                "truncated": len(prompt_tokens) + len(response_tokens) > 1024,
+            })
+
+        # Sort by loss (hardest first)
+        losses.sort(key=lambda x: x["loss"], reverse=True)
+
+        all_losses = [x["loss"] for x in losses]
+        mean_loss = sum(all_losses) / len(all_losses)
+        std_loss = (sum((l - mean_loss) ** 2 for l in all_losses) / len(all_losses)) ** 0.5
+
+        print(f"\n{'~' * 60}")
+        print(f"  {task_name}: {len(losses)} examples")
+        print(
+            f"  Loss: mean={mean_loss:.4f}, std={std_loss:.4f}, "
+            f"min={min(all_losses):.4f}, max={max(all_losses):.4f}"
+        )
+
+        n_truncated = sum(1 for x in losses if x["truncated"])
+        if n_truncated:
+            print(f"  WARNING: {n_truncated}/{len(losses)} examples TRUNCATED at 1024 tokens")
+
+        # Length correlation
+        short = [x for x in losses if x["resp_words"] < 100]
+        medium = [x for x in losses if 100 <= x["resp_words"] < 300]
+        long = [x for x in losses if x["resp_words"] >= 300]
+        parts = []
+        if short:
+            parts.append(f"short(<100w)={sum(x['loss'] for x in short)/len(short):.4f} ({len(short)} ex)")
+        if medium:
+            parts.append(f"med(100-300w)={sum(x['loss'] for x in medium)/len(medium):.4f} ({len(medium)} ex)")
+        if long:
+            parts.append(f"long(300+w)={sum(x['loss'] for x in long)/len(long):.4f} ({len(long)} ex)")
+        if parts:
+            print(f"  Loss by length: {', '.join(parts)}")
+
+        # Top 10 hardest
+        print(f"\n  TOP 10 HARDEST (highest loss):")
+        for j, x in enumerate(losses[:10]):
+            trunc = " [TRUNCATED]" if x["truncated"] else ""
+            print(f"    {j+1}. loss={x['loss']:.4f} ({x['resp_words']}w) #{x['idx']}: {x['prompt'][:70]}...{trunc}")
+
+        # Top 10 easiest
+        print(f"\n  TOP 10 EASIEST (lowest loss):")
+        for j, x in enumerate(reversed(losses[-10:])):
+            print(f"    {j+1}. loss={x['loss']:.4f} ({x['resp_words']}w) #{x['idx']}: {x['prompt'][:70]}...")
+
+    print(f"\n{'=' * 60}")
+    print("END DIAGNOSTIC")
+    print(f"{'=' * 60}")
