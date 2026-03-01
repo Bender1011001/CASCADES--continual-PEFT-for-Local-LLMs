@@ -66,7 +66,7 @@ class SleepConfig:
     enable_reorthogonalization: bool = True
     enable_synaptic_homeostasis: bool = True
     shy_target_norm: float = 1.0
-    svd_energy_threshold: float = 0.95
+    svd_energy_threshold: float = 0.98  # v10 BWT fix: was 0.95
     dedup_cosine_threshold: float = 0.95
     reorth_drift_threshold: float = 1e-4
     verbose: bool = True
@@ -185,7 +185,7 @@ class SleepConsolidation:
 
             # Soft-decay the weak dimensions instead of hard pruning
             # (gentler than amputation — like weakening synapses, not cutting)
-            decay_factor = 0.1  # Reduce weak dimensions by 90%
+            decay_factor = 0.3  # v10 BWT fix: was 0.1 (less aggressive)
             for k in range(core_pool.shape[0]):
                 # Rotate core to SVD-aligned coordinates
                 aligned = U_c.T @ core_pool[k] @ Vh_c.T

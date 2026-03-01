@@ -171,18 +171,27 @@ def _deal_filter(grad, quant_noise_std, config: AblationConfig):
     return _deal_filter_lib(grad, quant_noise_std=quant_noise_std)
 
 
-def _cllora_reassign(grad, null_sketch, config: AblationConfig):
+def _cllora_reassign(grad, null_sketch, config: AblationConfig, frozen_basis=None):
     """CL-LoRA EAR gradient reassignment if enabled.
 
     v10: Uses Tikhonov-regularized soft-EAR when config.enable_soft_ear
     is True. This replaces the hard 1% cutoff with a smooth geometric
     bridging function that naturally dampens as free space → 0.
+
+    v10 BWT fix: Also projects out frozen_basis directions accumulated
+    from completed tasks, preventing gradient interference with prior
+    task knowledge.
     """
     if not config.enable_cllora_reassign or null_sketch is None:
         return grad
     Q, _ = torch.linalg.qr(null_sketch)
     occupied = Q @ (Q.T @ grad)
     free = grad - occupied
+
+    # v10 BWT fix: Also remove frozen (prior-task) directions
+    if frozen_basis is not None and frozen_basis.shape[1] > 0:
+        frozen_proj = frozen_basis @ (frozen_basis.T @ free)
+        free = free - frozen_proj
 
     if config.enable_soft_ear:
         # v10: Tikhonov-regularized smooth reassignment
@@ -257,12 +266,19 @@ class CASCADESAdapter(nn.Module):
         self.register_buffer('ema_slow_V', torch.zeros(rank, in_features))
 
         # Streaming frequent directions (continuous EAR)
-        self.beta_ear = 0.99  # ~100 step memory half-life
+        self.beta_ear = 0.999  # ~1000 step memory half-life (v10: was 0.99)
         self.register_buffer('streaming_sketch_U', torch.zeros(out_features, rank))
         self.register_buffer(
-            'Q_null_U', torch.zeros(out_features, max(1, rank // 2))
+            'Q_null_U', torch.zeros(out_features, rank)  # v10: full-rank (was rank//2)
         )
         self.ear_initialized = False
+
+        # v10 BWT fix: Accumulated frozen null-space from completed tasks.
+        # At each task boundary, the occupied subspace is snapshotted and
+        # concatenated here. During training, gradients are projected out
+        # of BOTH the streaming null-space AND this frozen basis.
+        self.register_buffer('frozen_null_basis', torch.zeros(out_features, 0))
+        self.num_frozen_tasks = 0
 
         # Quantization noise estimate (updated during training)
         self.quant_noise_std = torch.tensor(1e-3)
@@ -322,6 +338,71 @@ class CASCADESAdapter(nn.Module):
         """Oja's rule covariance digest of the instantaneous Riemannian tangent."""
         with torch.no_grad():
             self.streaming_sketch_U.lerp_(tangent_U, 1 - self.beta_ear)
+
+    def freeze_current_subspace(self) -> None:
+        """Snapshot the current occupied subspace and freeze it for future tasks.
+
+        Called at task boundaries. The streaming EAR sketch captures which
+        gradient directions were important during the current task. This method
+        extracts those directions, orthogonalizes them, and appends them to
+        the frozen_null_basis — a permanent record of "directions that must
+        not be overwritten."
+
+        The frozen basis grows by at most `rank` columns per task. To prevent
+        unbounded growth, we cap it at `out_features // 2` columns and use
+        SVD truncation if needed.
+        """
+        with torch.no_grad():
+            S = self.streaming_sketch_U  # (d_out, rank)
+            if S.norm() < 1e-8:
+                return
+
+            # Extract occupied directions from the sketch covariance
+            C = S.T @ S  # (rank, rank)
+            eigvals, eigvecs = torch.linalg.eigh(C)
+
+            # Keep directions with significant energy (top eigenvalues)
+            total_energy = eigvals.sum()
+            if total_energy < 1e-10:
+                return
+
+            # Keep eigenvectors capturing ≥5% each of total energy
+            keep_mask = eigvals / total_energy > 0.05
+            if not keep_mask.any():
+                # At least keep the top direction
+                keep_mask[-1] = True
+
+            kept_vecs = eigvecs[:, keep_mask]  # (rank, k)
+
+            # Project to ambient space: occupied directions = S @ eigvecs
+            new_dirs = S @ kept_vecs  # (d_out, k)
+
+            # QR to get orthonormal columns
+            Q_new, _ = torch.linalg.qr(new_dirs)  # (d_out, k)
+
+            # Concatenate with existing frozen basis
+            if self.frozen_null_basis.shape[1] > 0:
+                combined = torch.cat([self.frozen_null_basis, Q_new], dim=1)
+                # Re-orthogonalize the combined basis to remove overlap
+                Q_combined, R = torch.linalg.qr(combined)
+                # Keep only columns with significant norm (non-degenerate)
+                col_norms = R.diag().abs()
+                significant = col_norms > 1e-6
+                Q_combined = Q_combined[:, significant]
+            else:
+                Q_combined = Q_new
+
+            # Cap at out_features // 2 to prevent oversized null-space
+            max_cols = self.U_shared.shape[0] // 2
+            if Q_combined.shape[1] > max_cols:
+                # SVD truncation: keep the most important directions
+                U_trunc, S_trunc, _ = torch.linalg.svd(
+                    Q_combined, full_matrices=False
+                )
+                Q_combined = U_trunc[:, :max_cols]
+
+            self.frozen_null_basis = Q_combined
+            self.num_frozen_tasks += 1
 
     def full_descent_step(self, lr: float = 0.01) -> None:
         """Unified CASCADES v9 Ecosystem Descent Pipeline.
@@ -401,7 +482,10 @@ class CASCADESAdapter(nn.Module):
                 self.streaming_ear_update(tangent_U)
 
                 if self.ear_initialized:
-                    free_U = _cllora_reassign(tangent_U, self.Q_null_U, cfg)
+                    free_U = _cllora_reassign(
+                        tangent_U, self.Q_null_U, cfg,
+                        frozen_basis=self.frozen_null_basis,
+                    )
 
                     n_orig, n_free = tangent_U.norm(), free_U.norm()
                     n_occ = (tangent_U - free_U).norm()

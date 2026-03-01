@@ -356,6 +356,18 @@ def train_cascades(
 
             print(f"  Promoted: {promoted}, Demoted: {demoted}")
 
+        # --- v10 BWT fix: Freeze occupied subspace at task boundary ---
+        # Snapshot the gradient directions that were important during this task.
+        # Future tasks' gradients will be projected out of these directions.
+        if config.enable_coso_nullspace:
+            frozen_count = 0
+            for a in critical_adapters:
+                a.freeze_current_subspace()
+                frozen_count += a.frozen_null_basis.shape[1]
+            if frozen_count > 0:
+                print(f"  🧊 Froze subspace: {frozen_count} total protected "
+                      f"directions across {len(critical_adapters)} adapters")
+
         # --- Sleep consolidation between tasks ---
         if enable_sleep:
             sleep_engine.run(critical_adapters, task_id=t)

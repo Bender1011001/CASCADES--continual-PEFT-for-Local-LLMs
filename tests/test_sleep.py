@@ -66,7 +66,7 @@ class TestSleepConfig:
         assert cfg.enable_reorthogonalization is True
         assert cfg.enable_synaptic_homeostasis is True
         assert cfg.shy_target_norm == 1.0
-        assert cfg.svd_energy_threshold == 0.95
+        assert cfg.svd_energy_threshold == 0.98
 
     def test_custom_config(self):
         cfg = SleepConfig(
