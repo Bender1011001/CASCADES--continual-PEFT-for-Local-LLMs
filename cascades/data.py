@@ -80,7 +80,7 @@ def prepare_data(
     task_number: int,
     base_seed: int = 42,
     use_system_prompt: bool = True,
-    max_length: int = 1024,
+    max_length: int = 384,
 ) -> DataLoader:
     """Load domain-specific JSONL prompts for CoT reasoning adaptation.
 

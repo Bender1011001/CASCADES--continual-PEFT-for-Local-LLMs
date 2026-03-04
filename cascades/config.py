@@ -48,6 +48,9 @@ class AblationConfig:
     enable_principal_expansion: bool = True
     # Adapter-level CFG lambda for decoding (1.0 = no boost)
     cfg_lambda: float = 1.5
+    # Ambient trace dedup: compare W = U Λ V^T in ambient space during sleep
+    # (wires through to SleepConfig.enable_cross_adapter_dedup)
+    enable_ambient_dedup: bool = True
 
 
 # Convenience instance with all components enabled (production default)

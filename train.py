@@ -37,6 +37,7 @@ from cascades.injection import (
 from cascades.data import prepare_data, diagnose_per_example_loss, NUM_TASKS
 from cascades.eval import evaluate_generative, STRUCTURED_SYSTEM_PROMPT
 from cascades.sleep import SleepConsolidation, SleepConfig
+from cascades.vram_monitor import log_vram, clear_cache, reset_peak_stats, check_oom_risk
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +230,10 @@ def train_cascades(
     )
     model.config.use_cache = False
 
+    # --- VRAM checkpoint: after model load ---
+    log_vram("after_model_load", device)
+    reset_peak_stats(device)
+
     # --- Quantization noise estimation ---
     quant_noise = estimate_quant_noise(model)
     print(f"Quantization noise std: {quant_noise:.6f}")
@@ -241,6 +246,7 @@ def train_cascades(
             model, probe_loader, device,
             threshold=dmole_threshold, config=config,
         )
+        clear_cache("after_dmole_probe", device)
 
     # --- Inject adapters ---
     critical_adapters, funlora_adapters = inject_cascades(
@@ -251,11 +257,19 @@ def train_cascades(
     for a in critical_adapters:
         a.quant_noise_std.fill_(quant_noise)
 
+    # --- VRAM checkpoint: after adapter injection ---
+    log_vram("after_adapter_injection", device)
+    reset_peak_stats(device)
+
     # --- Sleep engine ---
     sleep_engine = None
     if enable_sleep:
-        sleep_engine = SleepConsolidation(SleepConfig(verbose=True))
-        print("Sleep Consolidation Engine: ENABLED")
+        sleep_engine = SleepConsolidation(SleepConfig(
+            verbose=True,
+            enable_cross_adapter_dedup=config.enable_ambient_dedup,
+        ))
+        print(f"Sleep Consolidation Engine: ENABLED "
+              f"(ambient dedup={'ON' if config.enable_ambient_dedup else 'OFF'})")
 
     # --- Training loop ---
     num_tasks = NUM_TASKS
@@ -316,10 +330,8 @@ def train_cascades(
 
                 # Memory check on first batch
                 if ep == 0 and num_batches == 1:
-                    mem = torch.cuda.max_memory_allocated(device) / (1024**3)
-                    print(f"    [MEMORY] Peak VRAM: {mem:.2f} GB")
-                    if mem > 7.8:
-                        print("    [WARNING] VRAM above 7.8GB — OOM risk!")
+                    log_vram("after_first_backward", device)
+                    check_oom_risk(threshold_mb=7500.0, device=device)
 
                 # Intra-task micro-sleep
                 if enable_sleep and num_batches % 100 == 0 and num_batches > 0:
@@ -370,15 +382,21 @@ def train_cascades(
 
         # --- Sleep consolidation between tasks ---
         if enable_sleep:
+            clear_cache("before_sleep", device)
             sleep_engine.run(critical_adapters, task_id=t)
+            log_vram("after_sleep", device)
 
         # --- Evaluation ---
+        clear_cache("before_eval", device)
         print(f"\n--- Evaluation after Task {t} ---")
         with torch.inference_mode():
             for eval_t in range(t + 1):
                 eval_loader = prepare_data(tokenizer, eval_t, base_seed=seed)
                 total_loss, n_batches = 0.0, 0
+                max_eval_batches = 50  # Cap eval samples to save VRAM
                 for batch in eval_loader:
+                    if n_batches >= max_eval_batches:
+                        break
                     ids, mask, lbls = [x.to(device) for x in batch]
                     out = model(input_ids=ids, attention_mask=mask, labels=lbls)
                     total_loss += out.loss.item()
@@ -388,6 +406,7 @@ def train_cascades(
                 proxy_acc = math.exp(-avg_loss)
                 accuracy_matrix[t, eval_t] = proxy_acc
                 print(f"  Task {eval_t}: {proxy_acc * 100:.2f}% (loss: {avg_loss:.4f})")
+        clear_cache("after_eval", device)
 
     elapsed = time.time() - start_time
 
@@ -446,9 +465,10 @@ def train_cascades(
         em_results = {}
         for eval_t in range(num_tasks):
             print(f"\n--- Task {eval_t} ---")
+            clear_cache("before_generative_eval", device)
             task_em = evaluate_generative(
                 model, tokenizer, eval_t, device=device,
-                max_samples=50, max_new_tokens=512,
+                max_samples=25, max_new_tokens=256,
                 use_system_prompt=True, verbose=True,
             )
             em_results[eval_t] = task_em
