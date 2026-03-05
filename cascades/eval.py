@@ -25,8 +25,12 @@ import pandas as pd
 def extract_answer_from_cot(text: str) -> str:
     """Extract the final answer from a <think>...</think>\\n\\n<answer> formatted response."""
     
-    # Pre-processing: Strip rogue tool calls to prevent parsing errors
-    text = re.sub(r'<tool_call>.*?(?:</tool_call>|$)', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Pre-processing: Strip rogue tool calls to prevent parsing errors.
+    # First remove self-contained <tool_call>...</tool_call> blocks entirely.
+    # Then strip bare opening <tool_call> tags that have no closing tag (preserving
+    # the content after the tag so the answer can still be extracted).
+    text = re.sub(r'<tool_call>.*?</tool_call>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<tool_call>\s*', '', text, flags=re.IGNORECASE)
 
     # Strategy 1: Look for content after </think> tag
     think_end_pattern = re.compile(r'</think>\s*\n*\s*(.*)', re.DOTALL | re.IGNORECASE)
