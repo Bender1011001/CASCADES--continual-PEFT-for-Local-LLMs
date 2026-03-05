@@ -6,11 +6,6 @@ by implementing:
   1. Structured inference prompting that instructs the model to use <think>...</think> format
   2. Answer extraction from both structured CoT and conversational free-form outputs
   3. Multiple matching strategies (exact, normalized, semantic containment)
-
-The training data format is:
-  {"prompt": "...", "response": "<think>\n...\n</think>\n\n<final_answer>"}
-
-The model's generated output may or may not follow this format. This module handles both cases.
 """
 
 import re
@@ -28,13 +23,11 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 def extract_answer_from_cot(text: str) -> str:
-    """Extract the final answer from a <think>...</think>\\n\\n<answer> formatted response.
+    """Extract the final answer from a <think>...</think>\\n\\n<answer> formatted response."""
+    
+    # Pre-processing: Strip rogue tool calls to prevent parsing errors
+    text = re.sub(r'<tool_call>.*?(?:</tool_call>|$)', '', text, flags=re.DOTALL | re.IGNORECASE)
 
-    The training data format places the short final answer AFTER the </think> tag,
-    separated by two newlines. This function extracts that trailing answer.
-
-    If no </think> tag is found, returns the full text (the model didn't use CoT format).
-    """
     # Strategy 1: Look for content after </think> tag
     think_end_pattern = re.compile(r'</think>\s*\n*\s*(.*)', re.DOTALL | re.IGNORECASE)
     match = think_end_pattern.search(text)
@@ -72,7 +65,7 @@ def extract_answer_from_cot(text: str) -> str:
         if answer:
             return answer
 
-    # Strategy 5: If the model used a "Final Answer:" or "Answer:" prefix (common in chat models)
+    # Strategy 5: If the model used a "Final Answer:" or "Answer:" prefix
     answer_prefix_pattern = re.compile(
         r'(?:final\s+answer|the\s+answer|answer)\s*(?:is|:)\s*(.*)',
         re.DOTALL | re.IGNORECASE
@@ -80,148 +73,107 @@ def extract_answer_from_cot(text: str) -> str:
     match = answer_prefix_pattern.search(text)
     if match:
         answer = match.group(1).strip()
-        # Take only the first line/sentence of the answer
         answer = answer.split('\n')[0].strip()
-        # Strip trailing punctuation that chat models add
         answer = answer.rstrip('.')
         if answer:
             return answer
 
-    # Strategy 6: Take the last non-empty line (many CoT responses end with the answer)
+    # Strategy 6: Take the last non-empty line
     lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
     if lines:
         last_line = lines[-1]
-        # Clean up common chat artifacts
         last_line = last_line.rstrip('.')
+        
+        # Check if the last line is a raw MCQ answer like "Answer: B"
+        mcq_match = re.search(r'(?:answer|option)\s*(?:is|:)?\s*([a-e])(?:\.|$|\s)', last_line, re.IGNORECASE)
+        if mcq_match:
+            return mcq_match.group(1).upper()
+            
         return last_line
 
     return text.strip()
 
 
 def normalize_latex(text: str) -> str:
-    """Normalize LaTeX/math notation to plain text equivalents.
-
-    Handles: Big-O variants, LaTeX commands, delimiters, and operators.
-    This is critical for matching model outputs that may use different
-    notation than the training data (e.g., O(n^2 log n) vs Theta(n^2 \\log n)).
-    """
-    # Strip dollar signs and display math
+    """Normalize LaTeX/math notation to plain text equivalents."""
     text = text.replace('$', '')
     text = re.sub(r'\\\[|\\\]', '', text)
-
-    # Normalize Big-O family: Θ, Ω, θ → O (for matching purposes)
     text = text.replace('\u0398', 'O').replace('\u03b8', 'O').replace('\u03a9', 'O')
     text = re.sub(r'\\(?:Theta|theta|Omega|omega)\b', 'O', text)
-
-    # Remove \left, \right delimiters
     text = re.sub(r'\\(?:left|right)\s*', '', text)
 
-    # Convert LaTeX commands to plain text
     latex_to_plain = [
-        (r'\\log\b', 'log'),
-        (r'\\ln\b', 'ln'),
-        (r'\\sqrt\{([^}]*)\}', r'sqrt(\1)'),
-        (r'\\sqrt\b', 'sqrt'),
-        (r'\\cdot\b', '*'),
-        (r'\\times\b', '*'),
-        (r'\\pm\b', '+-'),
-        (r'\\geq\b', '>='),
-        (r'\\leq\b', '<='),
-        (r'\\neq\b', '!='),
-        (r'\\approx\b', '~'),
-        (r'\\infty\b', 'infinity'),
-        (r'\\sum\b', 'sum'),
-        (r'\\prod\b', 'prod'),
-        (r'\\pi\b', 'pi'),
+        (r'\\log\b', 'log'), (r'\\ln\b', 'ln'), (r'\\sqrt\{([^}]*)\}', r'sqrt(\1)'),
+        (r'\\sqrt\b', 'sqrt'), (r'\\cdot\b', '*'), (r'\\times\b', '*'),
+        (r'\\pm\b', '+-'), (r'\\geq\b', '>='), (r'\\leq\b', '<='),
+        (r'\\neq\b', '!='), (r'\\approx\b', '~'), (r'\\infty\b', 'infinity'),
+        (r'\\sum\b', 'sum'), (r'\\prod\b', 'prod'), (r'\\pi\b', 'pi'),
     ]
     for pattern, replacement in latex_to_plain:
         text = re.sub(pattern, replacement, text)
 
-    # Simple \frac{a}{b} → a/b
     text = re.sub(r'\\frac\{([^}]*)\}\{([^}]*)\}', r'(\1)/(\2)', text)
-
-    # Strip remaining \text{}, \mathrm{}, etc.
     text = re.sub(r'\\(?:text|mathrm|mathcal|mathbb|operatorname)\{([^}]*)\}', r'\1', text)
-
-    # Remove standalone backslash commands
     text = re.sub(r'\\([a-zA-Z]+)', r'\1', text)
-
-    # Remove curly braces
     text = text.replace('{', '').replace('}', '')
-
-    # Double backslash → single
     text = text.replace('\\\\', '\\')
-
     return text
 
 
 def normalize_answer(text: str) -> str:
-    """Normalize an answer string for flexible comparison.
-
-    Applies: LaTeX normalization, lowercase, unicode normalization,
-    whitespace collapse, removal of common mathematical formatting
-    artifacts, and stripping of enclosing quotes/periods/punctuation.
-    """
+    """Normalize an answer string for flexible comparison."""
     if not text:
         return ""
 
-    # Unicode normalize
     text = unicodedata.normalize('NFKD', text)
-
-    # LaTeX/math notation normalization (before lowercasing for Big-O)
     text = normalize_latex(text)
-
-    # Lowercase
     text = text.lower()
 
-    # Remove common wrapper phrases
     removals = [
-        r'^the\s+answer\s+is\s+',
-        r'^therefore,?\s+',
-        r'^thus,?\s+',
-        r'^so,?\s+',
-        r'^hence,?\s+',
-        r'^we\s+(?:get|have|obtain|find)\s+',
+        r'^the\s+answer\s+is\s+', r'^therefore,?\s+', r'^thus,?\s+',
+        r'^so,?\s+', r'^hence,?\s+', r'^we\s+(?:get|have|obtain|find)\s+',
         r'^this\s+(?:gives|yields|results?\s+in)\s+',
     ]
     for pattern in removals:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
 
-    # Collapse whitespace
     text = re.sub(r'\s+', ' ', text).strip()
-
-    # Strip enclosing quotes and trailing punctuation
     text = text.strip('"\'`')
     text = text.rstrip('.,;:!')
-
     return text
 
 
 def answers_match(generated: str, reference: str, strict: bool = False) -> bool:
-    """Compare two answers with configurable strictness.
-
-    Args:
-        generated: The model's extracted answer.
-        reference: The ground truth answer from training data.
-        strict: If True, only exact normalized match counts.
-                If False, also checks containment (generated contains reference
-                or reference contains generated).
-    """
+    """Compare two answers with configurable strictness."""
     gen_norm = normalize_answer(generated)
     ref_norm = normalize_answer(reference)
 
     if not gen_norm or not ref_norm:
         return False
 
-    # Exact normalized match
     if gen_norm == ref_norm:
         return True
+
+    # MCQ specific logic: securely match leading letter options (A, B, C, D, E)
+    def get_mcq(text):
+        m = re.match(r'^([a-e])\b', text, re.IGNORECASE)
+        return m.group(1).lower() if m else None
+
+    gen_mcq = get_mcq(gen_norm)
+    ref_mcq = get_mcq(ref_norm)
+
+    if ref_mcq and gen_mcq:
+        if ref_mcq == gen_mcq:
+            return True
 
     if strict:
         return False
 
-    # Containment check (the model might wrap the answer in context)
-    if ref_norm in gen_norm or gen_norm in ref_norm:
+    # Containment check
+    # Prevent the single-letter substring bug (e.g., "e" inside "d. more intelligence")
+    if len(gen_norm) > 1 and gen_norm in ref_norm:
+        return True
+    if len(ref_norm) > 1 and ref_norm in gen_norm:
         return True
 
     # Numeric equivalence check
@@ -237,14 +189,7 @@ def answers_match(generated: str, reference: str, strict: bool = False) -> bool:
 
 
 def token_f1(generated: str, reference: str) -> float:
-    """Compute token-level F1 between generated and reference answers.
-
-    This provides a softer metric than exact match — even partial overlap
-    gets credit. Useful for diagnosing how close the model is to correct answers.
-
-    Returns:
-        F1 score in [0.0, 1.0].
-    """
+    """Compute token-level F1 between generated and reference answers."""
     gen_tokens = set(normalize_answer(generated).split())
     ref_tokens = set(normalize_answer(reference).split())
 
@@ -266,12 +211,13 @@ def token_f1(generated: str, reference: str) -> float:
 
 STRUCTURED_SYSTEM_PROMPT = (
     "You are a precise reasoning assistant. When solving problems:\n"
-    "1. Think step-by-step inside <think>...</think> tags\n"
-    "2. After </think>, output ONLY the final answer on a new line\n"
-    "3. The final answer should be as concise as possible (a number, expression, or short phrase)\n"
-    "4. Do NOT add explanations after </think>\n\n"
+    "1. Think step-by-step inside <think>...</think> tags. Do NOT use tool calls.\n"
+    "2. After </think>, output ONLY the final answer on a new line.\n"
+    "3. If the question is multiple-choice, output ONLY the correct option letter (e.g., A, B, C, D, E).\n"
+    "4. The final answer should be as concise as possible (a number, expression, or short phrase).\n"
+    "5. Do NOT add explanations or conversational text after </think>.\n\n"
     "Example format:\n"
-    "<think>\n[your reasoning steps]\n</think>\n\n42"
+    "<think>\n[your reasoning steps]\n</think>\n\nB"
 )
 
 
@@ -280,21 +226,9 @@ def build_inference_prompt(
     user_prompt: str,
     use_system_prompt: bool = True,
 ) -> str:
-    """Build a properly formatted inference prompt with optional system instruction.
-
-    Args:
-        tokenizer: HuggingFace tokenizer with chat template support.
-        user_prompt: The user's question/problem.
-        use_system_prompt: Whether to include the structured output system prompt.
-
-    Returns:
-        Formatted prompt string ready for tokenization.
-    """
     messages = []
-
     if use_system_prompt:
         messages.append({"role": "system", "content": STRUCTURED_SYSTEM_PROMPT})
-
     messages.append({"role": "user", "content": user_prompt})
 
     try:
@@ -302,7 +236,6 @@ def build_inference_prompt(
             messages, tokenize=False, add_generation_prompt=True
         )
     except Exception:
-        # Fallback for tokenizers that don't support system role
         if use_system_prompt:
             combined = f"{STRUCTURED_SYSTEM_PROMPT}\n\n{user_prompt}"
             messages = [{"role": "user", "content": combined}]
@@ -311,7 +244,6 @@ def build_inference_prompt(
             )
         else:
             raise
-
     return prompt_text
 
 
@@ -331,23 +263,7 @@ def evaluate_generative(
     strict_match: bool = False,
     verbose: bool = True,
 ) -> dict:
-    """Run generative evaluation with answer extraction and flexible matching.
-
-    Args:
-        model: The CASCADES-adapted model.
-        tokenizer: Corresponding tokenizer.
-        task_number: Which task dataset to evaluate (0=logic, 1=decomp, 2=action).
-        device: CUDA device string.
-        max_samples: Maximum number of samples to evaluate.
-        max_new_tokens: Maximum tokens to generate per sample.
-        use_system_prompt: Whether to include structured output instructions.
-        strict_match: If True, only exact normalized matches count.
-        verbose: Print per-sample results.
-
-    Returns:
-        Dictionary with metrics: exact_match_rate, normalized_match_rate,
-        containment_match_rate, samples evaluated, and per-sample details.
-    """
+    
     files = [
         "data/task0_gsm8k_cot.jsonl",
         "data/task1_arc_cot.jsonl",
@@ -355,7 +271,6 @@ def evaluate_generative(
     ]
     file_path = files[task_number % len(files)]
 
-    # Try relative path first, then absolute
     path = Path(file_path)
     if not path.exists():
         path = Path(__file__).parent.parent / file_path
@@ -373,7 +288,6 @@ def evaluate_generative(
 
     model.eval()
 
-    # Re-enable KV cache for generation (disabled during training for grad checkpointing)
     original_use_cache = getattr(model.config, 'use_cache', True)
     model.config.use_cache = True
 
@@ -385,11 +299,8 @@ def evaluate_generative(
     for i, sample in enumerate(samples):
         prompt = sample['prompt']
         reference_response = sample['response'].strip()
-
-        # Extract the ground truth final answer from the training data
         reference_answer = extract_answer_from_cot(reference_response)
 
-        # Build inference prompt with structured instructions
         prompt_text = build_inference_prompt(tokenizer, prompt, use_system_prompt)
         inputs = tokenizer(prompt_text, return_tensors="pt").to(device)
 
@@ -401,16 +312,13 @@ def evaluate_generative(
             pad_token_id=tokenizer.eos_token_id,
         )
 
-        # Decode only the generated tokens (exclude the prompt)
         generated_text = tokenizer.decode(
             outputs[0][inputs['input_ids'].shape[1]:],
             skip_special_tokens=True
         ).strip()
 
-        # Extract the answer from generated text
         generated_answer = extract_answer_from_cot(generated_text)
 
-        # Check matches at multiple strictness levels
         is_exact = (generated_answer.strip() == reference_answer.strip())
         is_normalized = answers_match(generated_answer, reference_answer, strict=True)
         is_containment = answers_match(generated_answer, reference_answer, strict=False)
@@ -446,7 +354,6 @@ def evaluate_generative(
                 print(f"    REF: {reference_answer[:80]}")
                 print(f"    GEN: {generated_answer[:80]}")
 
-    # Restore original cache setting
     model.config.use_cache = original_use_cache
 
     total = len(samples)
@@ -471,23 +378,8 @@ def evaluate_generative(
 
     return results
 
-
 @torch.no_grad()
 def evaluate_accuracy(model, dataloader, device, limit: int = -1) -> float:
-    """Compute proxy accuracy as exp(-avg_loss).
-
-    This is the same metric used in the main training pipeline.
-    Provided here for module-level access.
-
-    Args:
-        model: The model to evaluate.
-        dataloader: DataLoader yielding (input_ids, attention_mask, labels).
-        device: Device string.
-        limit: Maximum number of batches (-1 for all).
-
-    Returns:
-        Proxy accuracy in [0, 1].
-    """
     model.eval()
     total_loss = 0.0
     num_batches = 0
