@@ -1,5 +1,5 @@
-# CASCADES: Parameter-Efficient Continual Adaptation via Shared Dynamic Subspaces
-# Pinned versions for reproducibility.  Tested with Python 3.13 on Windows 11.
+# CASCADES v2.0 — Parameter-Efficient Continual Adaptation via Shared Dynamic Subspaces
+# Minimum-version constraints.  Tested with Python 3.13 on Windows 11 (CUDA 12.x).
 #
 # To install:
 #   pip install -r requirements.txt
@@ -25,6 +25,12 @@ scipy>=1.13.0             # statistical tests (Wilcoxon, t-test)
 # ── Testing ───────────────────────────────────────────────────────────
 pytest>=8.2.0
 pytest-cov>=5.0.0         # coverage reports
+
+# ── Optional: rich logging in reproduce_the_breakthrough.py ───────────
+rich>=13.0.0
+
+# ── Optional: required by lora_baseline.py comparison only ────────────
+# peft>=0.11.0
 
 # ── Experiment tracking (optional, comment out if not needed) ─────────
 # wandb>=0.17.0

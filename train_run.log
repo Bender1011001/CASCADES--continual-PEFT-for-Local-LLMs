@@ -1,0 +1,22 @@
+============================================================
+CASCADES v9 TRAINING PIPELINE
+============================================================
+  Model: p-e-w/Qwen3-4B-Instruct-2507-heretic
+  Device: cuda
+  Config: AblationConfig(enable_paca=True, enable_deal=True, enable_gainlora_gate=True, enable_coso_nullspace=True, enable_cllora_reassign=True, enable_svc=True, enable_dmole_select=True, enable_funlora=True, gqa_ratio=1.0, ear_gamma=0.0001, enable_soft_ear=True, enable_principal_expansion=True, cfg_lambda=1.5, enable_ambient_dedup=True)
+============================================================
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards:  50%|█████     | 1/2 [00:04<00:04,  4.78s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:07<00:00,  3.79s/it]Loading checkpoint shards: 100%|██████████| 2/2 [00:07<00:00,  3.94s/it]
+  [VRAM] after_model_load: alloc=3287MB peak=4028MB reserved=4458MB free=3730MB (total=8188MB)
+Quantization noise std: 59.799622
+D-MoLE: 12/253 layers marked critical (threshold=0.22)
+  [VRAM] cache_clear@after_dmole_probe: freed=0MB, now=3295MB
+v10 GQA detected: 32Q / 8KV = 4.0x broadcast ratio
+Injected: 8 full CASCADES + 136 FunLoRA rank-1
+  [VRAM] after_adapter_injection: alloc=3310MB peak=3455MB reserved=4472MB free=3716MB (total=8188MB)
+Sleep Consolidation Engine: ENABLED (ambient dedup=ON)
+
+============================================================
+--- Training Task 0 ---
+============================================================
+  [VRAM] after_first_backward: alloc=3477MB peak=6413MB reserved=6660MB free=1528MB (total=8188MB)
+    [Ep 1 B 50] loss=2.0089

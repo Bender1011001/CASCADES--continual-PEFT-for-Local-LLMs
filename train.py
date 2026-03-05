@@ -18,6 +18,13 @@ import math
 import sys
 import time
 
+# Windows cp1252 consoles can't print the emoji in sleep.py / adapters.py.
+# Reconfigure stdout/stderr to UTF-8 so the full log renders correctly.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
 import numpy as np
 import pandas as pd
 import torch
