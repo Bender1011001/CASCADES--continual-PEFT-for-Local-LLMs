@@ -133,6 +133,7 @@ def normalize_answer(text: str) -> str:
         r'^the\s+answer\s+is\s+', r'^therefore,?\s+', r'^thus,?\s+',
         r'^so,?\s+', r'^hence,?\s+', r'^we\s+(?:get|have|obtain|find)\s+',
         r'^this\s+(?:gives|yields|results?\s+in)\s+',
+        r'^(?:option|answer)\s+',  # strips "Option B" → "b" so MCQ letter matching fires
     ]
     for pattern in removals:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
