@@ -44,7 +44,7 @@ Adapters are only injected into critical projection modules. Non-critical module
 
 We summarize the entire training loop over a task sequence.
 
-**Algorithm 1: CASCADES v7 Continuous Streaming Pipeline**
+**Algorithm 1: CASCADES v9 Continuous Streaming Pipeline**
 ```text
 Inputs: model with frozen backbone weights; target layer set L*; rank r; VRAM budget; continuous data stream D
 State per layer ℓ∈L*: shared Uℓ,Vℓ; liquid core pool; streaming PaCA EMA fast/slow buffers; continuous EAR sketch Bℓ; gate params ϕℓ
@@ -114,7 +114,7 @@ Prior to finalizing the v9 results, we confronted a critical empirical trap: do 
 
 Our experiments reveal a fatal flaw in standard fine-tuning: **it destroys abliterated models**. When standard LoRA was applied to the Qwen3-8B Heretic model, it suffered severe catastrophic forgetting (-12.18% BWT) and representational collapse. By constraining updates within Autopoietic Stiefel Manifolds, CASCADES safely trains abliterated models continuously without collapse, achieving +0.82% BWT on the Qwen3-4B Heretic core. This proves that CASCADES is essential for preserving the unique capabilities of uncensored models during continuous adaptation.
 
-### 6.3 Ablation Study
+### 6.4 Ablation Study
 
 | Mechanism                 | Accuracy Delta | VRAM Delta               |
 | :------------------------ | :------------- | :----------------------- |

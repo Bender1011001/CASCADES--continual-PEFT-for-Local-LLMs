@@ -1,5 +1,5 @@
 ﻿"""
-CASCADES v9 Training Pipeline — Thin orchestrator.
+CASCADES Training Pipeline — Thin orchestrator.
 
 This script is the single entry point for running CASCADES continual learning.
 All adapter logic, math ops, injection, evaluation, and data loading are
@@ -172,7 +172,7 @@ def train_cascades(
     seed: int = 42,
     dmole_threshold: float = 0.22,
     model_id: str = "p-e-w/Qwen3-4B-Instruct-2507-heretic",
-    output_prefix: str = "cascades_v9",
+    output_prefix: str = "cascades_v10",
     lr_liquid: float = 2e-3,
     lr_gate: float = 5e-4,
     lr_funlora: float = 5e-5,
@@ -181,7 +181,7 @@ def train_cascades(
     enable_sleep: bool = True,
     config: AblationConfig = DEFAULT_CONFIG,
 ) -> np.ndarray:
-    """Run complete CASCADES v9 continual learning pipeline.
+    """Run complete CASCADES continual learning pipeline.
 
     Args:
         seed: Global random seed.
@@ -207,7 +207,7 @@ def train_cascades(
 
     # --- Print configuration ---
     print("=" * 60)
-    print("CASCADES v9 TRAINING PIPELINE")
+    print("CASCADES TRAINING PIPELINE")
     print("=" * 60)
     print(f"  Model: {model_id}")
     print(f"  Device: {device}")
@@ -500,11 +500,11 @@ def train_cascades(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CASCADES v9 Training Pipeline")
+    parser = argparse.ArgumentParser(description="CASCADES Training Pipeline")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dmole_threshold", type=float, default=0.22)
     parser.add_argument("--model_id", type=str, default="p-e-w/Qwen3-4B-Instruct-2507-heretic")
-    parser.add_argument("--output_prefix", type=str, default="cascades_v9")
+    parser.add_argument("--output_prefix", type=str, default="cascades_v10")
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--eval_em", action="store_true")
     parser.add_argument("--no-sleep", action="store_true")
