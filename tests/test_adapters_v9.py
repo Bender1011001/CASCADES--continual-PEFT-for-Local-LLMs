@@ -82,7 +82,7 @@ class TestFunLoRAActivation:
     def test_forward_formula(self):
         x = torch.randn(4, 8)
         out = FunLoRA_Activation.apply(x)
-        expected = x + torch.sigmoid(x) + torch.tanh(x)
+        expected = x + torch.sigmoid(x) + torch.tanh(x) - 0.5  # v10.4: zero-centered
         assert torch.allclose(out, expected, atol=1e-6)
 
     def test_gradient_flows(self):

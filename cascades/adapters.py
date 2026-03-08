@@ -48,7 +48,9 @@ class FunLoRA_Activation(torch.autograd.Function):
         sig_x = torch.sigmoid(x)
         tanh_x = torch.tanh(x)
         ctx.save_for_backward(sig_x, tanh_x)
-        return x + sig_x + tanh_x
+        # v10.4 Fix: Zero-mean at x=0 prevents catastrophic covariate shift
+        # during D-MoLE promotion. σ(0)=0.5, so we subtract 0.5 to center.
+        return x + sig_x + tanh_x - 0.5
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -287,6 +289,16 @@ class CASCADESAdapter(nn.Module):
         # concatenated here. During training, gradients are projected out
         # of BOTH the streaming null-space AND this frozen basis.
         self.register_buffer('frozen_null_basis', torch.zeros(out_features, 0))
+
+        # v10.4: V subspace tracking — protects input-side directions.
+        # Without this, V freely rotates to accommodate new tasks, altering
+        # how past task inputs project into the cores.
+        self.register_buffer('streaming_sketch_V', torch.zeros(in_features, rank))
+        self.register_buffer(
+            'Q_null_V', torch.zeros(in_features, max(1, rank // 2))
+        )
+        self.register_buffer('frozen_null_basis_V', torch.zeros(in_features, 0))
+
         self.num_frozen_tasks = 0
 
         # Quantization noise estimate (updated during training)
@@ -343,10 +355,13 @@ class CASCADESAdapter(nn.Module):
 
             return mask_U, mask_V
 
-    def streaming_ear_update(self, tangent_U: torch.Tensor) -> None:
+    def streaming_ear_update(self, tangent_U: torch.Tensor, tangent_V: torch.Tensor | None = None) -> None:
         """Oja's rule covariance digest of the instantaneous Riemannian tangent."""
         with torch.no_grad():
             self.streaming_sketch_U.lerp_(tangent_U, 1 - self.beta_ear)
+            # v10.4: Track V tangent for input-side subspace protection
+            if tangent_V is not None and hasattr(self, 'streaming_sketch_V'):
+                self.streaming_sketch_V.lerp_(tangent_V.T, 1 - self.beta_ear)
 
     def freeze_current_subspace(self) -> None:
         """Snapshot the current occupied subspace and freeze it for future tasks.
@@ -414,6 +429,39 @@ class CASCADESAdapter(nn.Module):
                 Q_combined = Q_combined[:, -max_cols:]
 
             self.frozen_null_basis = Q_combined
+
+            # ------ V SUBSPACE FREEZE (v10.4) ------
+            if hasattr(self, 'streaming_sketch_V'):
+                S_V = self.streaming_sketch_V
+                if S_V.norm() > 1e-8:
+                    S_norm_V = S_V / (S_V.norm(dim=0, keepdim=True) + 1e-8)
+                    U_sV, S_sV, _ = torch.linalg.svd(S_norm_V, full_matrices=False)
+                    tot_var_V = (S_sV ** 2).sum()
+                    if tot_var_V > 1e-6:
+                        keep_V = (S_sV ** 2) / tot_var_V > 0.05
+                        if not keep_V.any():
+                            keep_V[0] = True
+                        Q_new_V = U_sV[:, keep_V]
+
+                        if (
+                            getattr(self, 'frozen_null_basis_V', None) is not None
+                            and self.frozen_null_basis_V.shape[1] > 0
+                        ):
+                            combined_V = torch.cat(
+                                [self.frozen_null_basis_V, Q_new_V], dim=1
+                            )
+                            V_c, Sv_c, _ = torch.linalg.svd(
+                                combined_V, full_matrices=False
+                            )
+                            Q_comb_V = V_c[:, Sv_c > 1e-6]
+                        else:
+                            Q_comb_V = Q_new_V
+
+                        max_cols_V = self.V_shared.shape[1] // 2
+                        if Q_comb_V.shape[1] > max_cols_V:
+                            Q_comb_V = Q_comb_V[:, :max_cols_V]
+                        self.frozen_null_basis_V = Q_comb_V
+
             self.num_frozen_tasks += 1
 
     def full_descent_step(self, lr: float = 0.01) -> None:
@@ -478,10 +526,19 @@ class CASCADESAdapter(nn.Module):
             self.ema_U.lerp_(grad_U, 1 - self.beta1)
             self.ema_V.lerp_(grad_V, 1 - self.beta1)
 
-            # 5. Map UNPROTECTED gradient to Stiefel tangent space FIRST (Fix 1)
-            # The tangent mapping MUST happen before EAR projection.
-            # Projecting before tangent mapping is broken because the
-            # sym_U subtraction (U @ sym_U) re-introduces frozen directions.
+            # 4.5 PHANTOM REPULSION FIX (v10.4)
+            # Keep EMA buffers clean of frozen bases. Without this, the EMA
+            # accumulates energy in frozen directions over hundreds of steps,
+            # and each tangent map leaks a fraction through numerical error.
+            if getattr(self, 'frozen_null_basis', None) is not None and self.frozen_null_basis.shape[1] > 0:
+                Q_f = self.frozen_null_basis
+                self.ema_U.copy_(self.ema_U - Q_f @ (Q_f.T @ self.ema_U))
+
+            if getattr(self, 'frozen_null_basis_V', None) is not None and self.frozen_null_basis_V.shape[1] > 0:
+                Q_fV = self.frozen_null_basis_V
+                self.ema_V.copy_(self.ema_V - self.ema_V @ Q_fV @ Q_fV.T)
+
+            # 5. Map safely to Stiefel tangent space
             sym_U = 0.5 * (
                 self.U_shared.T @ self.ema_U + self.ema_U.T @ self.U_shared
             )
@@ -492,32 +549,40 @@ class CASCADESAdapter(nn.Module):
             )
             tangent_V = self.ema_V - sym_V @ self.V_shared
 
-            # 6. Streaming EAR update and constraint
+            # 6. Apply EAR + STRICT Frozen Protection to Tangent Vectors
             if cfg.enable_coso_nullspace:
-                self.streaming_ear_update(tangent_U)  # Tracks true unprotected tangent
+                self.streaming_ear_update(tangent_U, tangent_V)
 
                 if getattr(self, 'ear_initialized', False):
-                    # APPLY EAR TO TANGENT VECTOR (Fix 1: project after tangent map)
+                    # Project Tangent U
                     safe_tangent_U = _cllora_reassign(
-                        tangent_U, self.Q_null_U, cfg,
+                        tangent_U,
+                        getattr(self, 'Q_null_U', None),
+                        cfg,
                         frozen_basis=getattr(self, 'frozen_null_basis', None),
                     )
+                    # Project Tangent V (transpose to treat as column vectors)
+                    safe_tangent_V_T = _cllora_reassign(
+                        tangent_V.T,
+                        getattr(self, 'Q_null_V', None),
+                        cfg,
+                        frozen_basis=getattr(self, 'frozen_null_basis_V', None),
+                    )
+                    safe_tangent_V = safe_tangent_V_T.T
 
-                    n_orig = tangent_U.norm()
-                    n_free = safe_tangent_U.norm()
-                    n_occ = (tangent_U - safe_tangent_U).norm()
+                    n_orig_U = tangent_U.norm()
+                    n_free_U = safe_tangent_U.norm()
+                    n_occ_U = (tangent_U - safe_tangent_U).norm()
+                    n_orig_V = tangent_V.norm()
+                    n_free_V = safe_tangent_V.norm()
 
                     # Autopoiesis: dynamic rank recycling
-                    # Instead of physically expanding tensors (which creates new
-                    # nn.Parameter objects not tracked by the optimizer), we
-                    # recycle a dead/zeroed dimension from a previous contraction.
                     n_dead = getattr(self, '_dead_ranks', 0)
                     if (
-                        n_free / (n_occ + n_free + 1e-8) < 0.20
+                        n_free_U / (n_occ_U + n_free_U + 1e-8) < 0.20
                         and n_dead > 0
                     ):
                         with torch.no_grad():
-                            # Revive the most recently killed dimension
                             revive_idx = n_dead - 1
                             print(
                                 f"🧬 Autopoiesis Triggered! Recycling dead rank "
@@ -526,7 +591,6 @@ class CASCADESAdapter(nn.Module):
                                 f"{self.U_shared.shape[1] - n_dead + 1})"
                             )
 
-                            # v10: Principal Tangent Expansion
                             S = self.streaming_sketch_U
                             U = self.U_shared
 
@@ -556,14 +620,41 @@ class CASCADESAdapter(nn.Module):
                             self._dead_ranks = n_dead - 1
                             self.contracted_this_step = True
 
-                    if n_orig > 1e-8 and n_free > 1e-8:
-                        tangent_U = safe_tangent_U * min(n_orig / n_free, 5.0)
+                    # Rescale to preserve gradient energy
+                    if n_orig_U > 1e-8 and n_free_U > 1e-8:
+                        tangent_U = safe_tangent_U * min(n_orig_U / n_free_U, 5.0)
                     else:
                         tangent_U = safe_tangent_U
 
-                    # REMOVED: Re-project to correct numerical drift from EAR.
-                    # The QR retraction + Ripple Fix handles out-of-tangent
-                    # matrices perfectly. Re-projecting breaks the lockdown.
+                    if n_orig_V > 1e-8 and n_free_V > 1e-8:
+                        tangent_V = safe_tangent_V * min(n_orig_V / n_free_V, 5.0)
+                    else:
+                        tangent_V = safe_tangent_V
+
+            # 6.5 CORE GRADIENT PROTECTION (v10.4)
+            # Prevent Adam from writing over latent matrices in directions
+            # past tasks rely on. Project core grads orthogonal to frozen
+            # subspaces expressed in the core's r×r coordinate frame.
+            if self.liquid_core.core_pool.grad is not None:
+                grad_C = self.liquid_core.core_pool.grad  # (K, r, r)
+
+                # Protect Output Directions (U-side)
+                if getattr(self, 'frozen_null_basis', None) is not None and self.frozen_null_basis.shape[1] > 0:
+                    Z_U = self.U_shared.T @ self.frozen_null_basis  # (r, n_frozen)
+                    Q_ZU, R_ZU = torch.linalg.qr(Z_U)
+                    Q_ZU = Q_ZU[:, R_ZU.diag().abs() > 1e-6]
+                    if Q_ZU.shape[1] > 0:
+                        grad_C = grad_C - torch.matmul(Q_ZU @ Q_ZU.T, grad_C)
+
+                # Protect Input Directions (V-side)
+                if getattr(self, 'frozen_null_basis_V', None) is not None and self.frozen_null_basis_V.shape[1] > 0:
+                    Z_V = self.V_shared @ self.frozen_null_basis_V  # (r, n_frozen_v)
+                    Q_ZV, R_ZV = torch.linalg.qr(Z_V)
+                    Q_ZV = Q_ZV[:, R_ZV.diag().abs() > 1e-6]
+                    if Q_ZV.shape[1] > 0:
+                        grad_C = grad_C - torch.matmul(grad_C, Q_ZV @ Q_ZV.T)
+
+                self.liquid_core.core_pool.grad = grad_C
 
             # GQA asymmetry: dimension-calibrated learning rates
             lr_U = lr * math.sqrt(2560.0 / self.U_shared.shape[0])
@@ -578,6 +669,7 @@ class CASCADESAdapter(nn.Module):
 
             # 8. SYSTEM-WIDE BASIS COUNTER-ROTATION (The Ripple Fix)
             R_U_inv = torch.linalg.pinv(R_U)
+            R_V_inv = torch.linalg.pinv(R_V)
 
             # Contravariant cores: mix by R
             for k in range(self.liquid_core.num_cores):
@@ -585,7 +677,7 @@ class CASCADESAdapter(nn.Module):
                     R_U @ self.liquid_core.core_pool[k] @ R_V.T
                 )
 
-            # Covariant buffers: mix by R^T (NOT R^{-1} — the transpose parity fix)
+            # Covariant buffers: mix by R^T
             self.ema_U.copy_(self.ema_U @ R_U.T)
             self.ema_V.copy_(R_V @ self.ema_V)
 
@@ -598,6 +690,9 @@ class CASCADESAdapter(nn.Module):
             if cfg.enable_coso_nullspace:
                 # Tangent vectors transform contravariantly via R^{-1}
                 self.streaming_sketch_U.copy_(self.streaming_sketch_U @ R_U_inv)
+                # v10.4: V sketch also needs contravariant transform
+                if hasattr(self, 'streaming_sketch_V'):
+                    self.streaming_sketch_V.copy_(self.streaming_sketch_V @ R_V_inv)
 
 
 # ---------------------------------------------------------------------------
@@ -690,26 +785,31 @@ class CASCADESLinear(nn.Module):
         )
         new_adapter = new_adapter.to(self.adapter.a.device)
 
-        # Fix 2: Distill FunLoRA knowledge into dimension 0
+        # v10.4: Distill FunLoRA weights + QR parity correction
         with torch.no_grad():
             a_norm = self.adapter.a.norm() + 1e-8
             b_norm = self.adapter.b.norm() + 1e-8
 
-            # Normalize to get unit vectors for Stiefel bases
-            u_0 = self.adapter.a / a_norm  # (d_out, 1)
-            v_0 = self.adapter.b / b_norm  # (1, d_in)
+            # Inject FunLoRA directions into dim 0 of Stiefel bases
+            new_adapter.U_shared.data[:, 0:1] = self.adapter.a / a_norm
+            new_adapter.V_shared.data[0:1, :] = self.adapter.b / b_norm
 
-            # Inject into first column/row of Stiefel bases
-            new_adapter.U_shared.data[:, 0:1] = u_0
-            new_adapter.V_shared.data[0:1, :] = v_0
+            # STRICT QR orthogonalization to prevent Stiefel shattering.
+            # QR may flip signs — we must track parity to fix the core.
+            Q_u, R_u = torch.linalg.qr(new_adapter.U_shared.data)
+            new_adapter.U_shared.data.copy_(Q_u)
+            Q_v, R_v = torch.linalg.qr(new_adapter.V_shared.data.T)
+            new_adapter.V_shared.data.copy_(Q_v.T)
 
-            # Transfer FunLoRA magnitude into liquid core dimension 0.
-            # FunLoRA activation linear approx at origin: f'(0) = 2.25
+            # QR parity correction: if QR flipped dim 0, flip the core too
+            sign_u = torch.sign(R_u[0, 0]).item() or 1.0
+            sign_v = torch.sign(R_v[0, 0]).item() or 1.0
+            distilled_val = (a_norm * b_norm * 2.25).item() * sign_u * sign_v
+
+            # Transfer FunLoRA magnitude into liquid core dimension 0
             for k in range(new_adapter.liquid_core.num_cores):
                 new_adapter.liquid_core.core_pool.data[k] *= 0.01  # Suppress noise
-                new_adapter.liquid_core.core_pool.data[k, 0, 0] = (
-                    a_norm * b_norm * 2.25
-                ).item()
+                new_adapter.liquid_core.core_pool.data[k, 0, 0] = distilled_val
 
         self.adapter = new_adapter
         return True
