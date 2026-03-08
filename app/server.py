@@ -34,12 +34,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.conversation_store import ConversationStore
+from app.self_synthesizer import SelfSynthesizer
 
 app = FastAPI(title="CASCADES Chat", version="1.0.0")
 
 # ── Globals (initialized in main) ─────────────────────────────────
 store = ConversationStore()
 model = None  # Lazy-loaded CASCADESModel
+synthesizer = SelfSynthesizer()
+dream = None  # Lazy-loaded DreamCycle
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -137,16 +140,25 @@ async def chat_completions(req: ChatCompletionRequest):
     if model is None or not model._loaded:
         raise HTTPException(503, "Model not loaded yet")
 
-    # Auto-save user message
+    # Auto-save user message + extract facts for Hemisphere B
     if req.conversation_id:
-        # Save the last user message
         user_msgs = [m for m in req.messages if m.role == "user"]
         if user_msgs:
-            store.add_message(req.conversation_id, "user", user_msgs[-1].content)
+            user_text = user_msgs[-1].content
+            store.add_message(req.conversation_id, "user", user_text)
             # Auto-title on first message
             conv = store.get_conversation(req.conversation_id)
             if conv and conv["title"] == "New Chat":
                 store.auto_title(req.conversation_id)
+
+            # Self-Synthesizer: extract facts → Q&A pairs → dream buffer
+            facts = synthesizer.extract_facts(user_text)
+            if facts and dream is not None:
+                qa_pairs = []
+                for fact in facts:
+                    qa_pairs.extend(fact.to_qa_pairs())
+                if qa_pairs:
+                    dream.add_memory(qa_pairs)
 
     if req.stream:
         return StreamingResponse(
@@ -255,6 +267,10 @@ async def memory_stats():
     stats = store.stats()
     if model:
         stats["model"] = model.status
+    if dream:
+        stats["dream"] = dream.status
+    stats["identity"] = synthesizer.get_identity_summary()
+    stats["known_facts"] = len(synthesizer.known_facts)
     return stats
 
 
@@ -289,15 +305,20 @@ def main():
     parser = argparse.ArgumentParser(description="CASCADES Chat Server")
     parser.add_argument("--model_id", type=str, default="./abliterated")
     parser.add_argument("--adapter_weights", type=str, default=None)
-    parser.add_argument("--rank", type=int, default=8)
+    parser.add_argument("--rank", type=int, default=32, help="Adapter rank (32+ recommended for lifelong learning)")
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-model", action="store_true", help="Start without loading model (UI dev mode)")
+    parser.add_argument("--no-dream", action="store_true", help="Disable background dream cycle")
+    parser.add_argument("--dream-threshold", type=int, default=3, help="Min facts before triggering dream cycle")
     args = parser.parse_args()
 
-    global model
+    global model, dream
 
     if not args.no_model:
+        import logging
+        logging.basicConfig(level=logging.INFO)
+
         from app.model_loader import CASCADESModel
         model = CASCADESModel(
             model_id=args.model_id,
@@ -305,6 +326,19 @@ def main():
             rank=args.rank,
         )
         model.load()
+
+        # Initialize Hemisphere B (Dream Cycle)
+        if not args.no_dream:
+            from app.dream_cycle import DreamCycle
+            dream = DreamCycle(
+                model=model.model,
+                tokenizer=model.tokenizer,
+                brain_lock=model._lock,
+                min_examples=args.dream_threshold,
+            )
+            print(f"🧠 Hemisphere B (Dream Cycle) ACTIVE — triggers after {args.dream_threshold} facts")
+        else:
+            print("Dream Cycle disabled")
     else:
         print("Starting in UI dev mode (no model loaded)")
 
