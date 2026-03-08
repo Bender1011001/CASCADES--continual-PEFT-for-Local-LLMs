@@ -20,7 +20,7 @@ from transformers import (
 )
 
 from cascades.config import AblationConfig, DEFAULT_CONFIG
-from cascades.injection import inject_cascades
+from cascades.injection import inject_cascades_adapters
 
 
 class CASCADESModel:
@@ -59,7 +59,6 @@ class CASCADESModel:
             or (len(self.model_id) >= 2 and self.model_id[1] == ":")
         )
         local_kwargs = {"local_files_only": True} if is_local else {}
-
         # --- NF4 Quantization ---
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -79,8 +78,7 @@ class CASCADESModel:
             quantization_config=bnb_config,
             device_map=self.device,
             torch_dtype=torch.float16,
-            **local_kwargs,
-        )
+            **local_kwargs,        )
         self.model.config.use_cache = True  # Enable KV cache for inference
         self.model.eval()
 
@@ -88,7 +86,7 @@ class CASCADESModel:
         print(f"Base model loaded in {elapsed:.1f}s")
 
         # --- Inject CASCADES adapters ---
-        inject_cascades(
+        inject_cascades_adapters(
             self.model, rank=self.rank, config=self.config
         )
         print(f"CASCADES adapters injected (rank={self.rank})")
