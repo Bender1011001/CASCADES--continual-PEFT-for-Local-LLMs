@@ -5,7 +5,8 @@
 - **Working**: Core library (`cascades/`), thin orchestrator (`train.py`), EM evaluator (`evaluate.py`), 152 unit tests, Colab notebook
 - **Proven**: v9 refactored run: 35.60% avg ACC, **+2.42% BWT** on Qwen3-4B Heretic, 5.2GB VRAM
 - **v10 Patches Applied**: GQA preconditioning, ambient trace dedup, soft-EAR, principal tangent expansion, CFG decoding
-- **Broken/Incomplete**: EM generative scores (improving — containment >60%), 8B GQA scaling paradox (fix now in code, untested)
+- **v10.3 BWT Fixes Applied**: 6-bug fix (tangent mapping paradox, promote amnesia, strict frozen EAR, Q_null_U half-rank, SVD/normalization skew, sleep covariance parity)
+- **Broken/Incomplete**: EM generative scores (improving — containment >60%), v10.3 BWT fixes untested on A100 colab run
 
 ## Tech Stack
 
@@ -25,6 +26,7 @@
 - `cascades/eval.py` — Generative evaluation with answer extraction
 - `cascades/sleep.py` — Bio-inspired sleep consolidation + **v10 ambient trace dedup**
 - `colab_cascades_v9.ipynb` — Google Colab notebook for GPU training
+- `colab_cascades_qwen3_abliterated.ipynb` — Colab notebook for CASCADES v10 on OBLITERATUS Qwen3-4B (A100)
 
 ## Architecture Quirks
 
@@ -39,7 +41,10 @@
 - **v10**: GQA ratio auto-detected from model.config; K/V adapters get gqa_ratio attribute at injection
 - **v10**: Cross-adapter dedup uses ambient trace Tr(Λ_A^T M_U Λ_B M_V), NOT flattened cosine
 - **v10 BWT**: `frozen_null_basis` accumulates occupied subspace across task boundaries — gradients projected out of frozen + streaming null-space
-- **v10 BWT**: `beta_ear=0.999` (~1000 step half-life), `Q_null_U` full-rank, sleep SVD threshold 0.98
+- **v10 BWT**: `beta_ear=0.999` (~1000 step half-life), `Q_null_U` half-rank (rank//2), sleep SVD threshold 0.98
+- **v10.3**: EAR projection happens AFTER Stiefel tangent mapping, NOT before (tangent map re-introduces frozen dirs)
+- **v10.3**: Frozen basis gets STRICT zero-tolerance projection; active sketch gets soft-EAR. Never unified.
+- **v10.3**: `promote()` distills FunLoRA rank-1 into dimension 0 of new Stiefel adapter (not random init)
 
 ## Trap Diary
 
@@ -60,6 +65,12 @@
 | Null-Space geometry bleed     | Prior-task projection applied to Stiefel tangent      | v10.1: Project ambient Euclidean EMA _before_ tangent mapping |
 | Numerical projection leakage  | Sequential Gram-Schmidt drifts over 1000s of steps    | v10.2: Unified strict-orthogonal QR projection base           |
 | Un-normalized covariance      | Eigenvalues reflect gradient magnitude instead of var | v10.2: Normalize sketch columns before covariance             |
+| Tangent Mapping Paradox       | EAR before tangent map → `U@sym_U` re-injects frozen | v10.3: Project tangent vector AFTER tangent mapping           |
+| Promotion amnesia             | `promote()` discards trained FunLoRA weights entirely | v10.3: Distill rank-1 a,b into Stiefel dim 0 + core[0,0]    |
+| Soft-EAR frozen leakage       | Unified basis allows soft dampening of frozen dirs    | v10.3: Strict projection for frozen, soft only for sketch    |
+| Q_null_U full-rank suicide    | Full-rank sketch blocks ALL plasticity (self-cancel)  | v10.3: Revert to rank//2 (protect top-half, learn in rest)   |
+| SVD on orthogonal truncation  | σ_i≈1 for orthogonal matrix → truncation is random    | v10.3: FIFO drop oldest columns instead of SVD truncation    |
+| Sleep covariance parity       | ema_U/ema_V mixed by R_inv (contravariant=wrong)      | v10.3: EMA buffers are covariant → transform by R^T          |
 
 ## Anti-Patterns (DO NOT)
 

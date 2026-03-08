@@ -176,7 +176,11 @@ def train_cascades(
     lr_liquid: float = 2e-3,
     lr_gate: float = 5e-4,
     lr_funlora: float = 5e-5,
+    lr_riemannian: float = 0.005,
     epochs: int = 2,
+    rank: int = 8,
+    max_length: int = 384,
+    num_samples: int = 150,
     eval_em: bool = False,
     enable_sleep: bool = True,
     config: AblationConfig = DEFAULT_CONFIG,
@@ -191,7 +195,13 @@ def train_cascades(
         lr_liquid: Learning rate for liquid core parameters.
         lr_gate: Learning rate for GainLoRA gates.
         lr_funlora: Learning rate for FunLoRA rank-1 adapters.
+        lr_riemannian: Learning rate for Riemannian Stiefel descent.
         epochs: Training epochs per task.
+        rank: Stiefel manifold rank for critical adapters (higher = more
+            expressive but more VRAM during training; adapter weight size
+            scales as O(rank) so inference is still cheap).
+        max_length: Maximum token sequence length for training data.
+        num_samples: Number of training examples per task to load.
         eval_em: Run generative exact match evaluation after training.
         enable_sleep: Enable bio-inspired sleep consolidation.
         config: Ablation configuration.
@@ -212,6 +222,8 @@ def train_cascades(
     print(f"  Model: {model_id}")
     print(f"  Device: {device}")
     print(f"  Config: {config}")
+    print(f"  Rank: {rank}, MaxLen: {max_length}, Epochs: {epochs}")
+    print(f"  LR: liquid={lr_liquid}, riemannian={lr_riemannian}")
     print("=" * 60)
 
     # --- Load model with NF4 quantization ---
@@ -257,7 +269,7 @@ def train_cascades(
 
     # --- Inject adapters ---
     critical_adapters, funlora_adapters = inject_cascades(
-        model, rank=8, layer_importance=layer_importance, config=config,
+        model, rank=rank, layer_importance=layer_importance, config=config,
     )
 
     # Set quantization noise on critical adapters
@@ -288,7 +300,7 @@ def train_cascades(
         print(f"--- Training Task {t} ---")
         print(f"{'=' * 60}")
 
-        dataloader = prepare_data(tokenizer, t, base_seed=seed)
+        dataloader = prepare_data(tokenizer, t, base_seed=seed, max_length=max_length)
         optimizer, critical_adapters = build_optimizer(
             model, config, lr_liquid, lr_gate, lr_funlora,
         )
@@ -316,7 +328,7 @@ def train_cascades(
 
                 # CASCADES Riemannian descent (critical adapters only)
                 for a in critical_adapters:
-                    a.full_descent_step(lr=0.005)
+                    a.full_descent_step(lr=lr_riemannian)
                     # Fix #2: Surgical optimizer state cleanup
                     cleanup_optimizer_state(a, optimizer)
 
@@ -506,6 +518,12 @@ if __name__ == "__main__":
     parser.add_argument("--model_id", type=str, default="p-e-w/Qwen3-4B-Instruct-2507-heretic")
     parser.add_argument("--output_prefix", type=str, default="cascades_v10")
     parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument("--rank", type=int, default=8,
+                        help="Stiefel manifold rank (higher=more expressive, 8 for 8GB, 16-32 for A100)")
+    parser.add_argument("--max_length", type=int, default=384,
+                        help="Max token sequence length (384 for 8GB, 512-768 for A100)")
+    parser.add_argument("--lr_riemannian", type=float, default=0.005,
+                        help="Riemannian Stiefel manifold learning rate")
     parser.add_argument("--eval_em", action="store_true")
     parser.add_argument("--no-sleep", action="store_true")
     args = parser.parse_args()
@@ -516,6 +534,9 @@ if __name__ == "__main__":
         model_id=args.model_id,
         output_prefix=args.output_prefix,
         epochs=args.epochs,
+        rank=args.rank,
+        max_length=args.max_length,
+        lr_riemannian=args.lr_riemannian,
         eval_em=args.eval_em,
         enable_sleep=not args.no_sleep,
     )

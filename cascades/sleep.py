@@ -334,8 +334,10 @@ class SleepConsolidation:
                             R_U @ adapter.liquid_core.core_pool.data[k]
                         )
                     if hasattr(adapter, "ema_U"):
-                        adapter.ema_U.data = adapter.ema_U.data @ R_U_inv
+                        # Fix 6: EMA gradients are COVARIANT — transform by R^T
+                        adapter.ema_U.data = adapter.ema_U.data @ R_U.T
                     if hasattr(adapter, "streaming_sketch_U"):
+                        # Tangent vectors transform contravariantly via R^{-1}
                         adapter.streaming_sketch_U.data = (
                             adapter.streaming_sketch_U.data @ R_U_inv
                         )
@@ -347,13 +349,13 @@ class SleepConsolidation:
                     Q_Vt, R_Vt = torch.linalg.qr(V.T)  # V^T = Q_Vt @ R_Vt
                     # V_new = Q_Vt^T = row-orthonormal (r, d_in)
                     # V_old = R_Vt^T @ Q_Vt^T → cores absorb R_Vt^T on right
-                    R_Vt_inv = torch.linalg.pinv(R_Vt)  # (r, r)
                     for k in range(adapter.liquid_core.core_pool.shape[0]):
                         adapter.liquid_core.core_pool.data[k] = (
                             adapter.liquid_core.core_pool.data[k] @ R_Vt.T
                         )
                     if hasattr(adapter, "ema_V"):
-                        adapter.ema_V.data = R_Vt_inv.T @ adapter.ema_V.data
+                        # Fix 6: EMA gradients are COVARIANT — transform by R_Vt
+                        adapter.ema_V.data = R_Vt @ adapter.ema_V.data
                     adapter.V_shared.data.copy_(Q_Vt.T)
 
                 corrected += 1

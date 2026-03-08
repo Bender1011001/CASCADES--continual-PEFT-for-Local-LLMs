@@ -172,44 +172,37 @@ def _deal_filter(grad, quant_noise_std, config: AblationConfig):
 
 
 def _cllora_reassign(grad, null_sketch, config: AblationConfig, frozen_basis=None):
-    """CL-LoRA EAR gradient reassignment if enabled.
+    """CL-LoRA EAR gradient reassignment with strict frozen protection.
 
-    v10.2 BWT Fix: Strict Orthogonal Lockdown.
-    Concatenates the streaming task null-space and frozen_basis prior-task
-    directions, computes a strictly orthogonal QR factorization, and applies
-    a single robust Householder projection to avoid numerical leakage.
+    v10.3 BWT Fix: Separated two-phase lockdown.
+    Phase 1 — STRICT: Hard zero-tolerance projection for frozen (prior-task)
+    directions. No gradient energy is allowed to leak into past tasks.
+    Phase 2 — SOFT: Tikhonov-regularized EAR penalty for active sketch
+    (current-task exploration dampening).
+
+    Uses SVD to extract valid bases (handles linear dependencies gracefully).
     """
-    if not config.enable_cllora_reassign:
-        return grad
-
-    protected_dirs = []
-    if null_sketch is not None:
-        protected_dirs.append(null_sketch)
+    # 1. STRICT lockdown for past tasks (Absolute Zero Tolerance)
     if frozen_basis is not None and frozen_basis.shape[1] > 0:
-        protected_dirs.append(frozen_basis)
+        U_f, S_f, _ = torch.linalg.svd(frozen_basis, full_matrices=False)
+        Q_f = U_f[:, S_f > 1e-6]
+        if Q_f.shape[1] > 0:
+            grad = grad - Q_f @ (Q_f.T @ grad)
 
-    if not protected_dirs:
+    # 2. SOFT penalty for active sketch (Exploration penalty)
+    if not config.enable_cllora_reassign or null_sketch is None:
         return grad
 
-    # Build unified protection space
-    W = torch.cat(protected_dirs, dim=1)
-    
-    # Strict orthogonalization
-    Q, R = torch.linalg.qr(W)
-    
-    # Numerical stability filter: drop degenerate columns from the unified space
-    col_norms = R.diag().abs()
-    Q_strict = Q[:, col_norms > 1e-6]
+    U_n, S_n, _ = torch.linalg.svd(null_sketch, full_matrices=False)
+    Q_n = U_n[:, S_n > 1e-6]
 
-    if Q_strict.shape[1] == 0:
+    if Q_n.shape[1] == 0:
         return grad
 
-    # Project out the perfectly orthogonal unified basis
-    occupied = Q_strict @ (Q_strict.T @ grad)
+    occupied = Q_n @ (Q_n.T @ grad)
     free = grad - occupied
 
     if config.enable_soft_ear:
-        # v10: Tikhonov-regularized smooth reassignment
         return soft_ear(grad, free, gamma=config.ear_gamma)
 
     # Legacy hard-cutoff EAR (v9 fallback)
@@ -285,7 +278,7 @@ class CASCADESAdapter(nn.Module):
         self.beta_ear = 0.999  # ~1000 step memory half-life (v10: was 0.99)
         self.register_buffer('streaming_sketch_U', torch.zeros(out_features, rank))
         self.register_buffer(
-            'Q_null_U', torch.zeros(out_features, rank)  # v10: full-rank (was rank//2)
+            'Q_null_U', torch.zeros(out_features, max(1, rank // 2))  # Fix 4: half-rank preserves plasticity
         )
         self.ear_initialized = False
 
@@ -396,33 +389,29 @@ class CASCADESAdapter(nn.Module):
 
             kept_vecs = eigvecs[:, keep_mask]  # (rank, k)
 
-            # Project to ambient space: occupied directions = S @ eigvecs
-            # (We use the original un-normalized S here to recover true vectors)
-            new_dirs = S @ kept_vecs  # (d_out, k)
-
-            # QR to get orthonormal columns
+            # Fix 5: Use S_norm to preserve structural variance properties.
+            # The eigenvectors came from normalized S, so we must project
+            # through normalized S to get geometrically consistent directions.
+            new_dirs = S_norm @ kept_vecs  # (d_out, k)
             Q_new, _ = torch.linalg.qr(new_dirs)  # (d_out, k)
 
             # Concatenate with existing frozen basis
             if self.frozen_null_basis.shape[1] > 0:
                 combined = torch.cat([self.frozen_null_basis, Q_new], dim=1)
-                # Re-orthogonalize the combined basis to remove overlap
-                Q_combined, R = torch.linalg.qr(combined)
-                # Keep only columns with significant norm (non-degenerate)
-                col_norms = R.diag().abs()
-                significant = col_norms > 1e-6
-                Q_combined = Q_combined[:, significant]
+                # Fix 5: Use SVD to merge bases — handles linear dependencies
+                # gracefully unlike QR which can produce artificial columns.
+                U_svd, S_svd, _ = torch.linalg.svd(combined, full_matrices=False)
+                Q_combined = U_svd[:, S_svd > 1e-6]
             else:
                 Q_combined = Q_new
 
             # Cap at out_features // 2 to prevent oversized null-space
             max_cols = self.U_shared.shape[0] // 2
             if Q_combined.shape[1] > max_cols:
-                # SVD truncation: keep the most important directions
-                U_trunc, S_trunc, _ = torch.linalg.svd(
-                    Q_combined, full_matrices=False
-                )
-                Q_combined = U_trunc[:, :max_cols]
+                # Fix 5: FIFO drop oldest columns. SVD truncation on an
+                # orthogonal matrix has all singular values ≈ 1.0, making
+                # it an arbitrary rotation that drops random directions.
+                Q_combined = Q_combined[:, -max_cols:]
 
             self.frozen_null_basis = Q_combined
             self.num_frozen_tasks += 1
@@ -489,21 +478,14 @@ class CASCADESAdapter(nn.Module):
             self.ema_U.lerp_(grad_U, 1 - self.beta1)
             self.ema_V.lerp_(grad_V, 1 - self.beta1)
 
-            # 4.5. v10.1 Ambient Null-Space Projection
-            # Project Euclidean EMA gradient *before* tangent mapping to prevent
-            # the QR retraction from bleeding the null-space back into the basis.
-            safe_ema_U = self.ema_U.clone()
-            if cfg.enable_coso_nullspace and getattr(self, 'ear_initialized', False):
-                safe_ema_U = _cllora_reassign(
-                    self.ema_U, self.Q_null_U, cfg,
-                    frozen_basis=getattr(self, 'frozen_null_basis', None),
-                )
-
-            # 5. Map to Stiefel tangent space AFTER protection
+            # 5. Map UNPROTECTED gradient to Stiefel tangent space FIRST (Fix 1)
+            # The tangent mapping MUST happen before EAR projection.
+            # Projecting before tangent mapping is broken because the
+            # sym_U subtraction (U @ sym_U) re-introduces frozen directions.
             sym_U = 0.5 * (
-                self.U_shared.T @ safe_ema_U + safe_ema_U.T @ self.U_shared
+                self.U_shared.T @ self.ema_U + self.ema_U.T @ self.U_shared
             )
-            tangent_U = safe_ema_U - self.U_shared @ sym_U
+            tangent_U = self.ema_U - self.U_shared @ sym_U
 
             sym_V = 0.5 * (
                 self.V_shared @ self.ema_V.T + self.ema_V @ self.V_shared.T
@@ -512,12 +494,18 @@ class CASCADESAdapter(nn.Module):
 
             # 6. Streaming EAR update and constraint
             if cfg.enable_coso_nullspace:
-                self.streaming_ear_update(tangent_U)
+                self.streaming_ear_update(tangent_U)  # Tracks true unprotected tangent
 
                 if getattr(self, 'ear_initialized', False):
-                    n_orig = self.ema_U.norm()
-                    n_free = safe_ema_U.norm()
-                    n_occ = (self.ema_U - safe_ema_U).norm()
+                    # APPLY EAR TO TANGENT VECTOR (Fix 1: project after tangent map)
+                    safe_tangent_U = _cllora_reassign(
+                        tangent_U, self.Q_null_U, cfg,
+                        frozen_basis=getattr(self, 'frozen_null_basis', None),
+                    )
+
+                    n_orig = tangent_U.norm()
+                    n_free = safe_tangent_U.norm()
+                    n_occ = (tangent_U - safe_tangent_U).norm()
 
                     # Autopoiesis: dynamic rank recycling
                     # Instead of physically expanding tensors (which creates new
@@ -539,10 +527,6 @@ class CASCADESAdapter(nn.Module):
                             )
 
                             # v10: Principal Tangent Expansion
-                            # Instead of stochastic mini-batch mean (causes
-                            # expansion shock), use power iteration on the
-                            # historical EAR sketch to find the dominant
-                            # missing structural dimension — noise-free.
                             S = self.streaming_sketch_U
                             U = self.U_shared
 
@@ -551,17 +535,13 @@ class CASCADESAdapter(nn.Module):
                                     U.shape[0], 1,
                                     device=U.device, dtype=U.dtype,
                                 )
-                                for _ in range(3):  # 3 iterations → dominant eigenvector
-                                    # Project away from occupied space (I - U U^T)
+                                for _ in range(3):
                                     u_new = u_new - U @ (U.T @ u_new)
-                                    # Apply historical covariance (S S^T)
                                     u_new = S @ (S.T @ u_new)
-                                    # Re-orthogonalize
                                     u_new = u_new - U @ (U.T @ u_new)
                                     u_new = u_new / (u_new.norm() + 1e-8)
                                 u_new = u_new.squeeze()
                             else:
-                                # Fallback: stochastic gradient direction (v9)
                                 u_new = grad_U.mean(dim=1)
                                 u_new = u_new - U @ (U.T @ u_new)
                                 u_new = u_new / (u_new.norm() + 1e-8)
@@ -570,23 +550,20 @@ class CASCADESAdapter(nn.Module):
                             v_new = v_new - (v_new @ self.V_shared.T) @ self.V_shared
                             v_new = v_new / (v_new.norm() + 1e-8)
 
-                            # Inject into the dead slot
                             self.U_shared.data[:, revive_idx] = u_new
                             self.V_shared.data[revive_idx, :] = v_new
 
                             self._dead_ranks = n_dead - 1
                             self.contracted_this_step = True
 
-                            # Tangents stay the same shape — no padding needed
-
                     if n_orig > 1e-8 and n_free > 1e-8:
-                        tangent_U = tangent_U * min(n_orig / n_free, 5.0)
+                        tangent_U = safe_tangent_U * min(n_orig / n_free, 5.0)
+                    else:
+                        tangent_U = safe_tangent_U
 
-                    # Re-project to correct numerical drift from EAR
-                    sym_free_U = 0.5 * (
-                        self.U_shared.T @ tangent_U + tangent_U.T @ self.U_shared
-                    )
-                    tangent_U = tangent_U - self.U_shared @ sym_free_U
+                    # REMOVED: Re-project to correct numerical drift from EAR.
+                    # The QR retraction + Ripple Fix handles out-of-tangent
+                    # matrices perfectly. Re-projecting breaks the lockdown.
 
             # GQA asymmetry: dimension-calibrated learning rates
             lr_U = lr * math.sqrt(2560.0 / self.U_shared.shape[0])
@@ -698,7 +675,12 @@ class CASCADESLinear(nn.Module):
         return base_out + 0.1 * adapt_out.to(base_out.dtype)
 
     def promote(self, rank: int = 8) -> bool:
-        """Promote FunLoRA → full ResonantCore adapter."""
+        """Promote FunLoRA → full ResonantCore adapter.
+
+        Fix 2: Distills the trained FunLoRA rank-1 weights (a, b) into
+        the first dimension of the new Stiefel manifold, preserving
+        learned knowledge instead of injecting random noise.
+        """
         if self.is_critical:
             return False
 
@@ -707,6 +689,28 @@ class CASCADESLinear(nn.Module):
             self.in_features, self.out_features, rank=rank, config=self.config
         )
         new_adapter = new_adapter.to(self.adapter.a.device)
+
+        # Fix 2: Distill FunLoRA knowledge into dimension 0
+        with torch.no_grad():
+            a_norm = self.adapter.a.norm() + 1e-8
+            b_norm = self.adapter.b.norm() + 1e-8
+
+            # Normalize to get unit vectors for Stiefel bases
+            u_0 = self.adapter.a / a_norm  # (d_out, 1)
+            v_0 = self.adapter.b / b_norm  # (1, d_in)
+
+            # Inject into first column/row of Stiefel bases
+            new_adapter.U_shared.data[:, 0:1] = u_0
+            new_adapter.V_shared.data[0:1, :] = v_0
+
+            # Transfer FunLoRA magnitude into liquid core dimension 0.
+            # FunLoRA activation linear approx at origin: f'(0) = 2.25
+            for k in range(new_adapter.liquid_core.num_cores):
+                new_adapter.liquid_core.core_pool.data[k] *= 0.01  # Suppress noise
+                new_adapter.liquid_core.core_pool.data[k, 0, 0] = (
+                    a_norm * b_norm * 2.25
+                ).item()
+
         self.adapter = new_adapter
         return True
 
