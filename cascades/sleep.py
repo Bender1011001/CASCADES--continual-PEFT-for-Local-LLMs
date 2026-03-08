@@ -61,12 +61,17 @@ class SleepConfig:
             orthonormality (||U^T U - I||_F) before re-orthogonalization.
         verbose: Print detailed sleep cycle diagnostics.
     """
-    enable_svd_consolidation: bool = True
-    enable_cross_adapter_dedup: bool = True
-    enable_reorthogonalization: bool = True
-    enable_synaptic_homeostasis: bool = True
+    # v10.4: SVD consolidation, cross-adapter dedup, and synaptic homeostasis
+    # are DISABLED because they destroy past-task routing magnitudes.
+    # SVD prunes "weak" dims that may be critical for prior tasks.
+    # Cross-dedup merges distinct layer representations.
+    # SHY rescales core norms that past tasks depend on.
+    enable_svd_consolidation: bool = False
+    enable_cross_adapter_dedup: bool = False
+    enable_reorthogonalization: bool = True  # Keep: numerically necessary
+    enable_synaptic_homeostasis: bool = False
     shy_target_norm: float = 1.0
-    svd_energy_threshold: float = 0.98  # v10 BWT fix: was 0.95
+    svd_energy_threshold: float = 0.98
     dedup_cosine_threshold: float = 0.95
     reorth_drift_threshold: float = 1e-4
     verbose: bool = True
@@ -327,33 +332,40 @@ class SleepConsolidation:
                 # Re-orthogonalize U via QR (column-orthonormal)
                 if drift_U > threshold:
                     Q_U, R_U = torch.linalg.qr(U)
-                    # U_old ≈ Q_U @ R_U → cores absorb R_U: S_new = R_U @ S_old
                     R_U_inv = torch.linalg.pinv(R_U)  # (r, r)
                     for k in range(adapter.liquid_core.core_pool.shape[0]):
                         adapter.liquid_core.core_pool.data[k] = (
                             R_U @ adapter.liquid_core.core_pool.data[k]
                         )
                     if hasattr(adapter, "ema_U"):
-                        adapter.ema_U.data = adapter.ema_U.data @ R_U_inv
+                        # Covariant: transform by R^T
+                        adapter.ema_U.data = adapter.ema_U.data @ R_U.T
                     if hasattr(adapter, "streaming_sketch_U"):
+                        # Contravariant: transform by R^{-1}
                         adapter.streaming_sketch_U.data = (
                             adapter.streaming_sketch_U.data @ R_U_inv
                         )
+                    # v10.4: Also transform V-side sketches if present
                     adapter.U_shared.data.copy_(Q_U)
 
                 # Re-orthogonalize V via QR on V^T (row-orthonormal)
                 if drift_V > threshold:
                     # V is (r, d_in). QR works on columns, so decompose V^T
                     Q_Vt, R_Vt = torch.linalg.qr(V.T)  # V^T = Q_Vt @ R_Vt
-                    # V_new = Q_Vt^T = row-orthonormal (r, d_in)
+                    R_Vt_inv = torch.linalg.pinv(R_Vt)
                     # V_old = R_Vt^T @ Q_Vt^T → cores absorb R_Vt^T on right
-                    R_Vt_inv = torch.linalg.pinv(R_Vt)  # (r, r)
                     for k in range(adapter.liquid_core.core_pool.shape[0]):
                         adapter.liquid_core.core_pool.data[k] = (
                             adapter.liquid_core.core_pool.data[k] @ R_Vt.T
                         )
                     if hasattr(adapter, "ema_V"):
-                        adapter.ema_V.data = R_Vt_inv.T @ adapter.ema_V.data
+                        # Covariant: transform by R_Vt
+                        adapter.ema_V.data = R_Vt @ adapter.ema_V.data
+                    if hasattr(adapter, "streaming_sketch_V"):
+                        # Contravariant: transform by R_Vt^{-1}
+                        adapter.streaming_sketch_V.data = (
+                            adapter.streaming_sketch_V.data @ R_Vt_inv
+                        )
                     adapter.V_shared.data.copy_(Q_Vt.T)
 
                 corrected += 1

@@ -1,0 +1,44 @@
+# Model weights & checkpoints
+*.pt
+*.safetensors
+*.bin
+*.gguf
+
+# Model directories
+abliterated/
+abliteratedqwen3/
+
+# Archives
+*.zip
+*.tar.gz
+*.7z
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Colab / Jupyter
+.ipynb_checkpoints/
+
+# Results (optional — uncomment to track)
+# *_results.csv

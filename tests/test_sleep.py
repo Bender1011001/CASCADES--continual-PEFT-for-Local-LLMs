@@ -61,10 +61,11 @@ def make_adapters(n: int = 5, rank: int = 8) -> list:
 class TestSleepConfig:
     def test_defaults(self):
         cfg = SleepConfig()
-        assert cfg.enable_svd_consolidation is True
-        assert cfg.enable_cross_adapter_dedup is True
+        # v10.4: destructive phases disabled by default
+        assert cfg.enable_svd_consolidation is False
+        assert cfg.enable_cross_adapter_dedup is False
         assert cfg.enable_reorthogonalization is True
-        assert cfg.enable_synaptic_homeostasis is True
+        assert cfg.enable_synaptic_homeostasis is False
         assert cfg.shy_target_norm == 1.0
         assert cfg.svd_energy_threshold == 0.98
 
@@ -195,6 +196,7 @@ class TestCrossAdapterDedup:
         engine = SleepConsolidation(SleepConfig(
             verbose=False,
             enable_svd_consolidation=False,
+            enable_cross_adapter_dedup=True,  # Explicitly enable for this test
             enable_reorthogonalization=False,
             enable_synaptic_homeostasis=False,
             dedup_cosine_threshold=0.99,
@@ -303,6 +305,7 @@ class TestSynapticHomeostasis:
             enable_svd_consolidation=False,
             enable_cross_adapter_dedup=False,
             enable_reorthogonalization=False,
+            enable_synaptic_homeostasis=True,  # Explicitly enable for this test
             shy_target_norm=1.0,
         ))
 
@@ -323,6 +326,7 @@ class TestSynapticHomeostasis:
             enable_svd_consolidation=False,
             enable_cross_adapter_dedup=False,
             enable_reorthogonalization=False,
+            enable_synaptic_homeostasis=True,  # Explicitly enable for this test
             shy_target_norm=1.0,
         ))
 
