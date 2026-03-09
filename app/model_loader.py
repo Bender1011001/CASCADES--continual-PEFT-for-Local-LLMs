@@ -20,7 +20,7 @@ from transformers import (
 )
 
 from cascades.config import AblationConfig, DEFAULT_CONFIG
-from cascades.injection import inject_cascades_adapters
+from cascades.injection import inject_cascades
 
 
 class CASCADESModel:
@@ -86,7 +86,7 @@ class CASCADESModel:
         print(f"Base model loaded in {elapsed:.1f}s")
 
         # --- Inject CASCADES adapters ---
-        inject_cascades_adapters(
+        inject_cascades(
             self.model, rank=self.rank, config=self.config
         )
         print(f"CASCADES adapters injected (rank={self.rank})")
