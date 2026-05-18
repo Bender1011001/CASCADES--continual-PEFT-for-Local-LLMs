@@ -27,6 +27,9 @@ build/
 venv/
 env/
 
+# Local linked worktrees
+.worktrees/
+
 # IDE
 .vscode/
 .idea/
