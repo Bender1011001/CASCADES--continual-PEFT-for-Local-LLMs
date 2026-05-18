@@ -42,3 +42,6 @@ Thumbs.db
 
 # Results (optional — uncomment to track)
 # *_results.csv
+
+# Torrents / downloads
+*.torrent
