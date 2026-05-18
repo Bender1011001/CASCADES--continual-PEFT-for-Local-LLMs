@@ -14,15 +14,52 @@ SBA_FORMULA_VARIANT = "sba-v1-valid-position-sinh-cosh-shared-denominator"
 
 
 def _sba_valid_mask(logits: torch.Tensor, valid_mask: torch.Tensor | None = None) -> torch.Tensor:
-    """Return a Boolean mask broadcastable to logits, where True means key is valid."""
+    """Return a Boolean mask broadcast to logits, where True means valid.
+
+    SBA logits are shaped as ``(..., Q, K)``.  In addition to PyTorch's
+    usual trailing-dimension broadcasting, accept common attention mask forms
+    that need singleton dimensions inserted after the batch axis, such as
+    ``(B, Q, K)`` and ``(B, K)`` for logits shaped ``(B, H, Q, K)``.
+    """
     if valid_mask is None:
         return torch.ones_like(logits, dtype=torch.bool)
     mask = valid_mask.to(device=logits.device)
     if mask.dtype != torch.bool:
         mask = mask != 0
-    while mask.dim() < logits.dim():
-        mask = mask.unsqueeze(-2)
-    return torch.broadcast_to(mask, logits.shape)
+
+    target_shape = tuple(logits.shape)
+    mask_shape = tuple(mask.shape)
+    if mask_shape == target_shape:
+        return mask
+
+    def _broadcast_with_shape(shape: tuple[int, ...]) -> torch.Tensor:
+        return torch.broadcast_to(mask.reshape(shape), target_shape)
+
+    if mask.dim() <= logits.dim() and logits.dim() >= 1:
+        key_dim = target_shape[-1]
+
+        # Key-only mask: (K,) -> (..., K).
+        if mask.dim() == 1 and mask_shape == (key_dim,):
+            return _broadcast_with_shape((1,) * (logits.dim() - 1) + mask_shape)
+
+        # Query/key mask: (Q, K) -> (..., Q, K).
+        if mask.dim() == 2 and logits.dim() >= 2 and mask_shape == target_shape[-2:]:
+            return _broadcast_with_shape((1,) * (logits.dim() - 2) + mask_shape)
+
+        # Batch-aware masks: (B, K) or (B, Q, K) -> (B, 1, ..., K/QK).
+        if (
+            logits.dim() >= 3
+            and mask.dim() >= 2
+            and mask_shape[0] == target_shape[0]
+            and mask_shape[1:] == target_shape[-(mask.dim() - 1):]
+        ):
+            inserted_singletons = (1,) * (logits.dim() - mask.dim())
+            return _broadcast_with_shape((mask_shape[0],) + inserted_singletons + mask_shape[1:])
+
+    try:
+        return torch.broadcast_to(mask, target_shape)
+    except RuntimeError as exc:
+        raise ValueError(f"valid_mask shape {mask_shape} is not broadcastable to logits shape {target_shape}") from exc
 
 
 def sba_reference_attention(

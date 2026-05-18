@@ -261,6 +261,76 @@ class TestSymmetricBipolarAttention:
             optimized = sba_optimized_attention(logits, valid_mask)
             assert torch.allclose(optimized, reference, atol=1e-10, rtol=1e-10)
 
+    def test_query_key_mask_broadcasts_across_batch_and_heads(self):
+        generator = torch.Generator().manual_seed(20260518)
+        logits = torch.randn(2, 3, 4, 5, generator=generator, dtype=torch.float64)
+        valid_mask = torch.tensor(
+            [
+                [True, True, False, True, False],
+                [True, False, True, True, False],
+                [False, True, True, False, True],
+                [True, True, True, False, True],
+            ]
+        )
+        expanded_mask = valid_mask.reshape(1, 1, 4, 5).expand_as(logits)
+
+        broadcast_weights = sba_optimized_attention(logits, valid_mask)
+        expanded_weights = sba_optimized_attention(logits, expanded_mask)
+
+        assert torch.allclose(broadcast_weights, expanded_weights, atol=0.0, rtol=0.0)
+        assert torch.all(broadcast_weights.masked_select(~expanded_mask) == 0.0)
+
+    def test_batch_query_key_mask_broadcasts_across_heads(self):
+        generator = torch.Generator().manual_seed(20260519)
+        logits = torch.randn(2, 3, 4, 5, generator=generator, dtype=torch.float64)
+        valid_mask = torch.tensor(
+            [
+                [
+                    [True, True, False, True, False],
+                    [True, False, True, True, False],
+                    [False, True, True, False, True],
+                    [True, True, True, False, True],
+                ],
+                [
+                    [True, False, True, False, True],
+                    [False, True, True, True, False],
+                    [True, True, False, True, True],
+                    [True, False, False, True, True],
+                ],
+            ]
+        )
+        expanded_mask = valid_mask.reshape(2, 1, 4, 5).expand_as(logits)
+
+        broadcast_weights = sba_optimized_attention(logits, valid_mask)
+        expanded_weights = sba_optimized_attention(logits, expanded_mask)
+
+        assert torch.allclose(broadcast_weights, expanded_weights, atol=0.0, rtol=0.0)
+        assert torch.all(broadcast_weights.masked_select(~expanded_mask) == 0.0)
+
+    def test_key_and_batch_key_masks_broadcast_over_attention_axes(self):
+        generator = torch.Generator().manual_seed(20260520)
+        logits = torch.randn(2, 3, 4, 5, generator=generator, dtype=torch.float64)
+        key_mask = torch.tensor([True, False, True, False, True])
+        batch_key_mask = torch.tensor(
+            [
+                [True, False, True, True, False],
+                [False, True, True, False, True],
+            ]
+        )
+
+        expanded_key_mask = key_mask.reshape(1, 1, 1, 5).expand_as(logits)
+        expanded_batch_key_mask = batch_key_mask.reshape(2, 1, 1, 5).expand_as(logits)
+
+        key_weights = sba_optimized_attention(logits, key_mask)
+        expanded_key_weights = sba_optimized_attention(logits, expanded_key_mask)
+        batch_key_weights = sba_optimized_attention(logits, batch_key_mask)
+        expanded_batch_key_weights = sba_optimized_attention(logits, expanded_batch_key_mask)
+
+        assert torch.allclose(key_weights, expanded_key_weights, atol=0.0, rtol=0.0)
+        assert torch.all(key_weights.masked_select(~expanded_key_mask) == 0.0)
+        assert torch.allclose(batch_key_weights, expanded_batch_key_weights, atol=0.0, rtol=0.0)
+        assert torch.all(batch_key_weights.masked_select(~expanded_batch_key_mask) == 0.0)
+
     def test_safe_masking_and_all_masked_rows(self):
         logits = torch.tensor([[[50.0, -50.0, 0.0], [1.0, 2.0, 3.0]]], dtype=torch.float64)
         valid_mask = torch.tensor([[[True, False, True], [False, False, False]]])
