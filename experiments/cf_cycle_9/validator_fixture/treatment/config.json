@@ -1,0 +1,29 @@
+{
+  "treatment_variant": "cllora-active-freeze-utility-veto-topk-2",
+  "ablation_config": {
+    "enable_paca": true,
+    "enable_deal": true,
+    "enable_gainlora_gate": true,
+    "enable_coso_nullspace": true,
+    "enable_cllora_reassign": true,
+    "enable_svc": true,
+    "enable_dmole_select": true,
+    "enable_funlora": true,
+    "gqa_ratio": 1.0,
+    "ear_gamma": 0.0001,
+    "enable_soft_ear": true,
+    "enable_principal_expansion": true,
+    "cfg_lambda": 1.5,
+    "enable_ambient_dedup": true,
+    "frozen_basis_variance_threshold": 0.05,
+    "frozen_basis_top_k_per_freeze": 2,
+    "frozen_basis_admission_policy": "utility_veto",
+    "frozen_basis_utility_probe_enabled": true,
+    "frozen_basis_utility_probe_batch_size": 2,
+    "frozen_basis_utility_probe_batches_per_old_task": 1,
+    "frozen_basis_utility_min_mean_delta": 0.0,
+    "frozen_basis_utility_old_task_veto_drop": 0.0,
+    "frozen_basis_utility_max_probe_examples_per_old_task": 2,
+    "frozen_basis_utility_metric": "heldout_loss_proxy"
+  }
+}

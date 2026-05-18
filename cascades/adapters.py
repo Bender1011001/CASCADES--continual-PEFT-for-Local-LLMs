@@ -20,6 +20,7 @@ All classes accept an AblationConfig to control which components are active.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Optional
 
 import torch
@@ -30,6 +31,113 @@ from cascades.config import AblationConfig, DEFAULT_CONFIG
 from cascades.math_ops import deal_heat_kernel_filter as _deal_filter_lib
 from cascades.math_ops import gqa_precondition_gradient
 from cascades.math_ops import soft_ear
+
+
+@dataclass(frozen=True)
+class UtilityAdmissionResult:
+    """CPU-testable frozen-basis utility admission result."""
+
+    admitted_indices: list[int]
+    vetoed_indices: list[int]
+    mean_delta_by_candidate: list[float | None]
+    min_old_task_delta_by_candidate: list[float | None]
+    veto_task_indices_by_candidate: list[list[int]]
+    utility_gate_admitted_any: bool
+    zero_admission_reason: str | None
+
+
+def utility_veto_admission_decisions(
+    structural_scores: torch.Tensor,
+    utility_delta_by_candidate,
+    top_k: int | None,
+    min_mean_delta: float,
+    old_task_veto_drop: float,
+    old_task_count: int,
+) -> UtilityAdmissionResult:
+    """Select utility-passing frozen-basis candidates without salience fallback.
+
+    Positive utility deltas mean predicted old-task retention benefit; negative
+    deltas mean predicted harm. When no old task exists yet, there is no
+    meaningful veto, so the helper falls back to structural top-k admission.
+    """
+    scores = structural_scores.detach().flatten().to(dtype=torch.float32, device="cpu")
+    candidate_count = int(scores.numel())
+    if candidate_count == 0:
+        return UtilityAdmissionResult([], [], [], [], [], False, "no_candidates")
+
+    if top_k is None or int(top_k) <= 0:
+        k = candidate_count
+    else:
+        k = min(int(top_k), candidate_count)
+
+    def _top_structural(indices: list[int]) -> list[int]:
+        return sorted(indices, key=lambda idx: float(scores[idx].item()), reverse=True)[:k]
+
+    if old_task_count <= 0:
+        admitted = _top_structural(list(range(candidate_count)))
+        return UtilityAdmissionResult(
+            admitted_indices=admitted,
+            vetoed_indices=[],
+            mean_delta_by_candidate=[None] * candidate_count,
+            min_old_task_delta_by_candidate=[None] * candidate_count,
+            veto_task_indices_by_candidate=[[] for _ in range(candidate_count)],
+            utility_gate_admitted_any=bool(admitted),
+            zero_admission_reason=None if admitted else "no_candidates",
+        )
+
+    if utility_delta_by_candidate is None:
+        deltas = torch.zeros(candidate_count, old_task_count, dtype=torch.float32)
+    else:
+        deltas = torch.as_tensor(utility_delta_by_candidate, dtype=torch.float32)
+        if deltas.ndim == 1:
+            deltas = deltas.unsqueeze(1)
+        if deltas.shape[0] != candidate_count:
+            raise ValueError(
+                "utility_delta_by_candidate must have one row per structural candidate"
+            )
+        if deltas.shape[1] < old_task_count:
+            pad = torch.zeros(candidate_count, old_task_count - deltas.shape[1])
+            deltas = torch.cat([deltas, pad], dim=1)
+        elif deltas.shape[1] > old_task_count:
+            deltas = deltas[:, :old_task_count]
+
+    admitted_pool: list[int] = []
+    vetoed: list[int] = []
+    means: list[float] = []
+    mins: list[float] = []
+    veto_tasks: list[list[int]] = []
+
+    for idx in range(candidate_count):
+        row = deltas[idx]
+        mean_delta = float(row.mean().item())
+        min_delta = float(row.min().item())
+        veto_task_indices = [
+            task_idx
+            for task_idx, value in enumerate(row.tolist())
+            if float(value) < old_task_veto_drop
+        ]
+        means.append(mean_delta)
+        mins.append(min_delta)
+        veto_tasks.append(veto_task_indices)
+        if mean_delta >= min_mean_delta and not veto_task_indices:
+            admitted_pool.append(idx)
+        else:
+            vetoed.append(idx)
+
+    admitted = _top_structural(admitted_pool)
+    zero_reason = None
+    if not admitted:
+        zero_reason = "all_candidates_vetoed" if vetoed else "no_candidates"
+
+    return UtilityAdmissionResult(
+        admitted_indices=admitted,
+        vetoed_indices=vetoed,
+        mean_delta_by_candidate=means,
+        min_old_task_delta_by_candidate=mins,
+        veto_task_indices_by_candidate=veto_tasks,
+        utility_gate_admitted_any=bool(admitted),
+        zero_admission_reason=zero_reason,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -377,11 +485,32 @@ class CASCADESAdapter(nn.Module):
         SVD truncation if needed.
         """
         with torch.no_grad():
+            admission_policy = getattr(self.config, "frozen_basis_admission_policy", "salience")
+            utility_probe_enabled = bool(
+                getattr(self.config, "frozen_basis_utility_probe_enabled", False)
+            )
             top_k = getattr(self.config, "frozen_basis_top_k_per_freeze", None)
             if top_k is not None:
                 top_k = int(top_k)
                 if top_k <= 0:
                     top_k = None
+
+            utility_info = {
+                "admission_policy": admission_policy,
+                "utility_probe_enabled": utility_probe_enabled,
+                "utility_candidates_considered_u": 0,
+                "utility_candidates_admitted_u": 0,
+                "utility_candidates_vetoed_u": 0,
+                "utility_candidates_considered_v": 0,
+                "utility_candidates_admitted_v": 0,
+                "utility_candidates_vetoed_v": 0,
+                "utility_mean_delta_by_candidate": [],
+                "utility_min_old_task_delta_by_candidate": [],
+                "utility_veto_task_indices_by_candidate": [],
+                "utility_gate_admitted_any": False,
+                "utility_gate_zero_admission_reason": None,
+            }
+            self.last_freeze_utility_admission = utility_info
 
             def limit_admission_by_top_k(
                 scores: torch.Tensor, keep_mask: torch.Tensor
@@ -398,6 +527,87 @@ class CASCADESAdapter(nn.Module):
                 limited = torch.zeros_like(keep_mask)
                 limited[top_indices] = True
                 return limited
+
+            def proxy_utility_deltas(
+                candidate_dirs: torch.Tensor,
+                frozen_basis: torch.Tensor,
+            ) -> torch.Tensor | None:
+                old_task_count = int(getattr(self, "num_frozen_tasks", 0))
+                if old_task_count <= 0:
+                    return None
+                candidate_count = int(candidate_dirs.shape[1])
+                if candidate_count == 0:
+                    return torch.zeros(0, old_task_count, device=candidate_dirs.device)
+                if frozen_basis is None or frozen_basis.shape[1] <= 0:
+                    return torch.zeros(candidate_count, old_task_count, device=candidate_dirs.device)
+
+                q_old, s_old, _ = torch.linalg.svd(frozen_basis, full_matrices=False)
+                q_old = q_old[:, s_old > 1e-6]
+                if q_old.shape[1] == 0:
+                    return torch.zeros(candidate_count, old_task_count, device=candidate_dirs.device)
+
+                q_candidate, _ = torch.linalg.qr(candidate_dirs)
+                overlap = (q_old.T @ q_candidate).abs().amax(dim=0)
+                # CPU-testable retention proxy: candidates overlapping an
+                # existing frozen old-task basis are predicted harmful. Nearly
+                # orthogonal candidates get zero delta and pass the conservative
+                # no-negative-veto gate.
+                harm = torch.clamp(overlap - 1e-4, min=0.0)
+                return (-harm).unsqueeze(1).repeat(1, old_task_count)
+
+            def apply_utility_gate(
+                side: str,
+                scores: torch.Tensor,
+                candidate_dirs: torch.Tensor,
+                frozen_basis: torch.Tensor,
+            ) -> tuple[list[int], UtilityAdmissionResult | None]:
+                if admission_policy != "utility_veto" or not utility_probe_enabled:
+                    all_indices = list(range(int(scores.numel())))
+                    if top_k is None:
+                        return all_indices, None
+                    return sorted(
+                        all_indices,
+                        key=lambda idx: float(scores[idx].detach().cpu().item()),
+                        reverse=True,
+                    )[: int(top_k)], None
+
+                deltas = proxy_utility_deltas(candidate_dirs, frozen_basis)
+                result = utility_veto_admission_decisions(
+                    structural_scores=scores,
+                    utility_delta_by_candidate=deltas,
+                    top_k=top_k,
+                    min_mean_delta=float(
+                        getattr(self.config, "frozen_basis_utility_min_mean_delta", 0.0)
+                    ),
+                    old_task_veto_drop=float(
+                        getattr(self.config, "frozen_basis_utility_old_task_veto_drop", 0.0)
+                    ),
+                    old_task_count=int(getattr(self, "num_frozen_tasks", 0)),
+                )
+
+                utility_info[f"utility_candidates_considered_{side}"] = int(scores.numel())
+                utility_info[f"utility_candidates_admitted_{side}"] = len(result.admitted_indices)
+                utility_info[f"utility_candidates_vetoed_{side}"] = len(result.vetoed_indices)
+                utility_info["utility_mean_delta_by_candidate"].extend(
+                    result.mean_delta_by_candidate
+                )
+                utility_info["utility_min_old_task_delta_by_candidate"].extend(
+                    result.min_old_task_delta_by_candidate
+                )
+                utility_info["utility_veto_task_indices_by_candidate"].extend(
+                    result.veto_task_indices_by_candidate
+                )
+                utility_info["utility_gate_admitted_any"] = bool(
+                    utility_info["utility_gate_admitted_any"]
+                    or result.utility_gate_admitted_any
+                )
+                if result.zero_admission_reason and not utility_info[
+                    "utility_gate_zero_admission_reason"
+                ]:
+                    utility_info[
+                        "utility_gate_zero_admission_reason"
+                    ] = result.zero_admission_reason
+                return result.admitted_indices, result
 
             S = self.streaming_sketch_U  # (d_out, rank)
             if S.norm() < 1e-8:
@@ -427,18 +637,32 @@ class CASCADESAdapter(nn.Module):
             if not keep_mask.any():
                 # At least keep the top structural direction
                 keep_mask[-1] = True
-            keep_mask = limit_admission_by_top_k(normalized_eigvals, keep_mask)
+            if admission_policy != "utility_veto" or not utility_probe_enabled:
+                keep_mask = limit_admission_by_top_k(normalized_eigvals, keep_mask)
 
-            kept_vecs = eigvecs[:, keep_mask]  # (rank, k)
+            kept_indices = torch.nonzero(keep_mask, as_tuple=False).flatten()
+            kept_vecs = eigvecs[:, kept_indices]  # (rank, k)
 
             # Fix 5: Use S_norm to preserve structural variance properties.
             # The eigenvectors came from normalized S, so we must project
             # through normalized S to get geometrically consistent directions.
             new_dirs = S_norm @ kept_vecs  # (d_out, k)
-            Q_new, _ = torch.linalg.qr(new_dirs)  # (d_out, k)
+            candidate_scores = normalized_eigvals[kept_indices]
+            admitted_rel_indices, _ = apply_utility_gate(
+                "u", candidate_scores, new_dirs, self.frozen_null_basis
+            )
+            if admitted_rel_indices:
+                selected = torch.tensor(
+                    admitted_rel_indices, device=new_dirs.device, dtype=torch.long
+                )
+                Q_new, _ = torch.linalg.qr(new_dirs[:, selected])  # (d_out, k)
+            else:
+                Q_new = new_dirs[:, :0]
 
             # Concatenate with existing frozen basis
-            if self.frozen_null_basis.shape[1] > 0:
+            if Q_new.shape[1] == 0:
+                Q_combined = self.frozen_null_basis
+            elif self.frozen_null_basis.shape[1] > 0:
                 combined = torch.cat([self.frozen_null_basis, Q_new], dim=1)
                 # Fix 5: Use SVD to merge bases — handles linear dependencies
                 # gracefully unlike QR which can produce artificial columns.
@@ -469,10 +693,30 @@ class CASCADESAdapter(nn.Module):
                         keep_V = normalized_var_V > frozen_basis_variance_threshold
                         if not keep_V.any():
                             keep_V[0] = True
-                        keep_V = limit_admission_by_top_k(normalized_var_V, keep_V)
-                        Q_new_V = U_sV[:, keep_V]
+                        if admission_policy != "utility_veto" or not utility_probe_enabled:
+                            keep_V = limit_admission_by_top_k(normalized_var_V, keep_V)
+                        kept_v_indices = torch.nonzero(keep_V, as_tuple=False).flatten()
+                        candidate_V = U_sV[:, kept_v_indices]
+                        candidate_scores_V = normalized_var_V[kept_v_indices]
+                        admitted_v_rel_indices, _ = apply_utility_gate(
+                            "v",
+                            candidate_scores_V,
+                            candidate_V,
+                            self.frozen_null_basis_V,
+                        )
+                        if admitted_v_rel_indices:
+                            selected_v = torch.tensor(
+                                admitted_v_rel_indices,
+                                device=candidate_V.device,
+                                dtype=torch.long,
+                            )
+                            Q_new_V = candidate_V[:, selected_v]
+                        else:
+                            Q_new_V = candidate_V[:, :0]
 
-                        if (
+                        if Q_new_V.shape[1] == 0:
+                            Q_comb_V = self.frozen_null_basis_V
+                        elif (
                             getattr(self, 'frozen_null_basis_V', None) is not None
                             and self.frozen_null_basis_V.shape[1] > 0
                         ):

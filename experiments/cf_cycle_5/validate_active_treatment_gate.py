@@ -42,6 +42,8 @@ def validate_active_treatment(
     expected_variant: str = EXPECTED_VARIANT,
     expected_frozen_basis_variance_threshold: float | None = None,
     expected_frozen_basis_top_k_per_freeze: int | None = None,
+    expected_admission_policy: str | None = None,
+    expect_utility_probe: bool = False,
 ) -> dict[str, Any]:
     arm_dir = root / arm
     config_path = arm_dir / "config.json"
@@ -69,6 +71,7 @@ def validate_active_treatment(
 
     ablation_config = config.get("ablation_config", {})
     reassign = instrumentation.get("reassign", {})
+    utility_admission = instrumentation.get("utility_admission", {})
 
     config_checks = {
         "treatment_variant": config.get("treatment_variant") == expected_variant,
@@ -96,6 +99,14 @@ def validate_active_treatment(
             isinstance(actual_top_k, int)
             and not isinstance(actual_top_k, bool)
             and actual_top_k == expected_frozen_basis_top_k_per_freeze
+        )
+    if expected_admission_policy is not None:
+        config_checks["frozen_basis_admission_policy"] = (
+            ablation_config.get("frozen_basis_admission_policy") == expected_admission_policy
+        )
+    if expect_utility_probe:
+        config_checks["frozen_basis_utility_probe_enabled"] = (
+            ablation_config.get("frozen_basis_utility_probe_enabled") is True
         )
     for key, passed in config_checks.items():
         if not passed:
@@ -136,6 +147,52 @@ def validate_active_treatment(
         if not passed:
             failures.append(f"instrumentation check failed: {key}")
 
+    utility_checks: dict[str, bool] = {}
+    utility_summary = {
+        "freeze_calls_with_utility_probe": int(
+            utility_admission.get("freeze_calls_with_utility_probe", 0) or 0
+        ),
+        "candidates_considered_total": int(
+            utility_admission.get("candidates_considered_total", 0) or 0
+        ),
+        "candidates_admitted_total": int(
+            utility_admission.get("candidates_admitted_total", 0) or 0
+        ),
+        "candidates_vetoed_total": int(
+            utility_admission.get("candidates_vetoed_total", 0) or 0
+        ),
+        "zero_admission_freeze_calls": int(
+            utility_admission.get("zero_admission_freeze_calls", 0) or 0
+        ),
+        "mean_utility_delta_sum": utility_admission.get("mean_utility_delta_sum", 0.0),
+        "min_old_task_delta_min": utility_admission.get("min_old_task_delta_min"),
+        "per_old_task_veto_counts": utility_admission.get("per_old_task_veto_counts", {}),
+    }
+    if expected_admission_policy is not None:
+        utility_checks["admission_policy"] = (
+            ablation_config.get("frozen_basis_admission_policy") == expected_admission_policy
+        )
+    if expect_utility_probe:
+        utility_checks["utility_probe_enabled"] = (
+            ablation_config.get("frozen_basis_utility_probe_enabled") is True
+        )
+        utility_checks["freeze_calls_with_utility_probe_positive"] = (
+            utility_summary["freeze_calls_with_utility_probe"] > 0
+        )
+        utility_checks["utility_candidates_internally_consistent"] = (
+            utility_summary["candidates_admitted_total"] >= 0
+            and utility_summary["candidates_vetoed_total"] >= 0
+            and utility_summary["candidates_admitted_total"]
+            + utility_summary["candidates_vetoed_total"]
+            <= utility_summary["candidates_considered_total"]
+        )
+        utility_checks["zero_admission_count_nonnegative"] = (
+            utility_summary["zero_admission_freeze_calls"] >= 0
+        )
+    for key, passed in utility_checks.items():
+        if not passed:
+            failures.append(f"utility check failed: {key}")
+
     return {
         "valid": not failures,
         "arm": arm,
@@ -156,6 +213,12 @@ def validate_active_treatment(
             ),
             "frozen_basis_top_k_per_freeze": ablation_config.get(
                 "frozen_basis_top_k_per_freeze"
+            ),
+            "frozen_basis_admission_policy": ablation_config.get(
+                "frozen_basis_admission_policy"
+            ),
+            "frozen_basis_utility_probe_enabled": ablation_config.get(
+                "frozen_basis_utility_probe_enabled"
             ),
         },
         "instrumentation_summary": {
@@ -180,6 +243,8 @@ def validate_active_treatment(
             "removed_norm_above_cf_cycle_5_baseline": removed_norm_above_cf_cycle_5_baseline,
             "removed_norm_above_material_strength": removed_norm_above_material_strength,
         },
+        "utility_checks": utility_checks,
+        "utility_admission_summary": utility_summary,
     }
 
 
@@ -191,6 +256,8 @@ def main() -> int:
     parser.add_argument("--expected-variant", default=EXPECTED_VARIANT)
     parser.add_argument("--expected-frozen-basis-variance-threshold", type=float)
     parser.add_argument("--expected-frozen-basis-top-k-per-freeze", type=int)
+    parser.add_argument("--expected-admission-policy")
+    parser.add_argument("--expect-utility-probe", action="store_true")
     args = parser.parse_args()
 
     payload = validate_active_treatment(
@@ -199,6 +266,8 @@ def main() -> int:
         expected_variant=args.expected_variant,
         expected_frozen_basis_variance_threshold=args.expected_frozen_basis_variance_threshold,
         expected_frozen_basis_top_k_per_freeze=args.expected_frozen_basis_top_k_per_freeze,
+        expected_admission_policy=args.expected_admission_policy,
+        expect_utility_probe=args.expect_utility_probe,
     )
     out_path = Path(args.out)
     if not out_path.is_absolute():

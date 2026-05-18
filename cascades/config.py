@@ -55,6 +55,16 @@ class AblationConfig:
     frozen_basis_variance_threshold: float = 0.05
     # Optional cap on newly admitted frozen-basis directions per freeze call.
     frozen_basis_top_k_per_freeze: int | None = None
+    # Frozen-basis admission policy. "salience" preserves the legacy path;
+    # "utility_veto" applies the CF-cycle-9 CPU-testable utility gate.
+    frozen_basis_admission_policy: str = "salience"
+    frozen_basis_utility_probe_enabled: bool = False
+    frozen_basis_utility_probe_batch_size: int = 2
+    frozen_basis_utility_probe_batches_per_old_task: int = 1
+    frozen_basis_utility_min_mean_delta: float = 0.0
+    frozen_basis_utility_old_task_veto_drop: float = 0.0
+    frozen_basis_utility_max_probe_examples_per_old_task: int = 2
+    frozen_basis_utility_metric: str = "heldout_loss_proxy"
 
 
 # Convenience instance with all components enabled (production default)

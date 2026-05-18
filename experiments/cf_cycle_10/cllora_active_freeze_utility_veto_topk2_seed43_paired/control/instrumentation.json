@@ -1,0 +1,76 @@
+{
+  "ear_events": [],
+  "freeze_events": [],
+  "reassign": {
+    "calls_total": 0,
+    "calls_with_null_sketch": 0,
+    "calls_with_frozen_basis": 0,
+    "max_frozen_cols": 0,
+    "removed_norm_sum": 0.0,
+    "removed_norm_per_frozen_call": 0.0,
+    "calls_with_active_reassign_enabled": 0,
+    "calls_with_active_reassign_path": 0,
+    "active_adjustment_norm_sum": 0.0,
+    "active_adjustment_norm_max": 0.0
+  },
+  "vram": [
+    {
+      "tag": "after_model_load",
+      "allocated_mb": 3296.01171875,
+      "reserved_mb": 4084.0,
+      "max_allocated_mb": 4037.5302734375
+    },
+    {
+      "tag": "after_adapter_injection",
+      "allocated_mb": 3314.71044921875,
+      "reserved_mb": 4094.0,
+      "max_allocated_mb": 3530.462890625
+    },
+    {
+      "tag": "after_first_backward",
+      "allocated_mb": 3481.1728515625,
+      "reserved_mb": 6570.0,
+      "max_allocated_mb": 6375.01513671875
+    },
+    {
+      "tag": "after_sleep",
+      "allocated_mb": 3498.2783203125,
+      "reserved_mb": 4326.0,
+      "max_allocated_mb": 6632.3720703125
+    },
+    {
+      "tag": "after_first_backward",
+      "allocated_mb": 3682.21044921875,
+      "reserved_mb": 7042.0,
+      "max_allocated_mb": 6831.900390625
+    },
+    {
+      "tag": "after_sleep",
+      "allocated_mb": 3681.23583984375,
+      "reserved_mb": 4542.0,
+      "max_allocated_mb": 6843.90966796875
+    },
+    {
+      "tag": "after_first_backward",
+      "allocated_mb": 3649.41015625,
+      "reserved_mb": 6998.0,
+      "max_allocated_mb": 6843.90966796875
+    },
+    {
+      "tag": "after_sleep",
+      "allocated_mb": 3649.41015625,
+      "reserved_mb": 4692.0,
+      "max_allocated_mb": 6843.90966796875
+    }
+  ],
+  "utility_admission": {
+    "freeze_calls_with_utility_probe": 0,
+    "candidates_considered_total": 0,
+    "candidates_admitted_total": 0,
+    "candidates_vetoed_total": 0,
+    "zero_admission_freeze_calls": 0,
+    "mean_utility_delta_sum": 0.0,
+    "min_old_task_delta_min": null,
+    "per_old_task_veto_counts": {}
+  }
+}

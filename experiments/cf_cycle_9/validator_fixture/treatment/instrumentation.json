@@ -1,0 +1,24 @@
+{
+  "reassign": {
+    "calls_with_frozen_basis": 3,
+    "max_frozen_cols": 2,
+    "removed_norm_sum": 0.03,
+    "removed_norm_per_frozen_call": 0.01,
+    "calls_with_active_reassign_enabled": 3,
+    "calls_with_active_reassign_path": 3,
+    "active_adjustment_norm_sum": 0.02,
+    "active_adjustment_norm_max": 0.01
+  },
+  "utility_admission": {
+    "freeze_calls_with_utility_probe": 2,
+    "candidates_considered_total": 4,
+    "candidates_admitted_total": 1,
+    "candidates_vetoed_total": 3,
+    "zero_admission_freeze_calls": 1,
+    "mean_utility_delta_sum": 0.4,
+    "min_old_task_delta_min": 0.0,
+    "per_old_task_veto_counts": {
+      "1": 2
+    }
+  }
+}

@@ -82,6 +82,7 @@ def config_for_arm(arm: str, treatment_variant: str = "frozen-only") -> Ablation
         "cllora-active",
         "cllora-active-freeze-thresh-02",
         "cllora-active-freeze-topk-2",
+        "cllora-active-freeze-utility-veto-topk-2",
     }:
         raise ValueError(f"unsupported treatment_variant: {treatment_variant!r}")
 
@@ -91,11 +92,14 @@ def config_for_arm(arm: str, treatment_variant: str = "frozen-only") -> Ablation
     ear_gamma = 1e-4
     frozen_basis_variance_threshold = 0.05
     frozen_basis_top_k_per_freeze = None
+    frozen_basis_admission_policy = "salience"
+    frozen_basis_utility_probe_enabled = False
 
     if arm == "treatment" and treatment_variant in {
         "cllora-active",
         "cllora-active-freeze-thresh-02",
         "cllora-active-freeze-topk-2",
+        "cllora-active-freeze-utility-veto-topk-2",
     }:
         enable_coso_nullspace = True
         enable_cllora_reassign = True
@@ -103,8 +107,14 @@ def config_for_arm(arm: str, treatment_variant: str = "frozen-only") -> Ablation
         ear_gamma = 1e-4
         if treatment_variant == "cllora-active-freeze-thresh-02":
             frozen_basis_variance_threshold = 0.02
-        if treatment_variant == "cllora-active-freeze-topk-2":
+        if treatment_variant in {
+            "cllora-active-freeze-topk-2",
+            "cllora-active-freeze-utility-veto-topk-2",
+        }:
             frozen_basis_top_k_per_freeze = 2
+        if treatment_variant == "cllora-active-freeze-utility-veto-topk-2":
+            frozen_basis_admission_policy = "utility_veto"
+            frozen_basis_utility_probe_enabled = True
 
     return AblationConfig(
         enable_paca=True,
@@ -123,6 +133,14 @@ def config_for_arm(arm: str, treatment_variant: str = "frozen-only") -> Ablation
         enable_ambient_dedup=True,
         frozen_basis_variance_threshold=frozen_basis_variance_threshold,
         frozen_basis_top_k_per_freeze=frozen_basis_top_k_per_freeze,
+        frozen_basis_admission_policy=frozen_basis_admission_policy,
+        frozen_basis_utility_probe_enabled=frozen_basis_utility_probe_enabled,
+        frozen_basis_utility_probe_batch_size=2,
+        frozen_basis_utility_probe_batches_per_old_task=1,
+        frozen_basis_utility_min_mean_delta=0.0,
+        frozen_basis_utility_old_task_veto_drop=0.0,
+        frozen_basis_utility_max_probe_examples_per_old_task=2,
+        frozen_basis_utility_metric="heldout_loss_proxy",
     )
 
 
@@ -200,6 +218,16 @@ def install_instrumentation(train_module) -> tuple[dict, Callable[[], None]]:
             "active_adjustment_norm_max": 0.0,
         },
         "vram": [],
+        "utility_admission": {
+            "freeze_calls_with_utility_probe": 0,
+            "candidates_considered_total": 0,
+            "candidates_admitted_total": 0,
+            "candidates_vetoed_total": 0,
+            "zero_admission_freeze_calls": 0,
+            "mean_utility_delta_sum": 0.0,
+            "min_old_task_delta_min": None,
+            "per_old_task_veto_counts": {},
+        },
     }
 
     orig_reassign = adapters_mod._cllora_reassign
@@ -259,6 +287,47 @@ def install_instrumentation(train_module) -> tuple[dict, Callable[[], None]]:
         orig_freeze(self)
         u_after = int(getattr(self, "frozen_null_basis").shape[1])
         v_after = int(getattr(self, "frozen_null_basis_V").shape[1])
+        utility_info = dict(getattr(self, "last_freeze_utility_admission", {}) or {})
+        utility_stats = stats["utility_admission"]
+        utility_probe_enabled = bool(utility_info.get("utility_probe_enabled", False))
+        considered = int(utility_info.get("utility_candidates_considered_u", 0) or 0) + int(
+            utility_info.get("utility_candidates_considered_v", 0) or 0
+        )
+        admitted = int(utility_info.get("utility_candidates_admitted_u", 0) or 0) + int(
+            utility_info.get("utility_candidates_admitted_v", 0) or 0
+        )
+        vetoed = int(utility_info.get("utility_candidates_vetoed_u", 0) or 0) + int(
+            utility_info.get("utility_candidates_vetoed_v", 0) or 0
+        )
+        if utility_probe_enabled:
+            utility_stats["freeze_calls_with_utility_probe"] += 1
+        utility_stats["candidates_considered_total"] += considered
+        utility_stats["candidates_admitted_total"] += admitted
+        utility_stats["candidates_vetoed_total"] += vetoed
+        if utility_info.get("utility_gate_zero_admission_reason"):
+            utility_stats["zero_admission_freeze_calls"] += 1
+        mean_deltas = [
+            float(value)
+            for value in utility_info.get("utility_mean_delta_by_candidate", [])
+            if isinstance(value, (int, float))
+        ]
+        utility_stats["mean_utility_delta_sum"] += float(sum(mean_deltas))
+        min_deltas = [
+            float(value)
+            for value in utility_info.get("utility_min_old_task_delta_by_candidate", [])
+            if isinstance(value, (int, float))
+        ]
+        if min_deltas:
+            old_min = utility_stats.get("min_old_task_delta_min")
+            new_min = min(min_deltas)
+            utility_stats["min_old_task_delta_min"] = new_min if old_min is None else min(
+                float(old_min), new_min
+            )
+        veto_counts = utility_stats["per_old_task_veto_counts"]
+        for task_indices in utility_info.get("utility_veto_task_indices_by_candidate", []):
+            for task_index in task_indices:
+                key = str(task_index)
+                veto_counts[key] = int(veto_counts.get(key, 0)) + 1
         stats["freeze_events"].append(
             {
                 "task_boundary_call": len(stats["freeze_events"]) + 1,
@@ -276,6 +345,44 @@ def install_instrumentation(train_module) -> tuple[dict, Callable[[], None]]:
                 ),
                 "frozen_basis_top_k_per_freeze": getattr(
                     config, "frozen_basis_top_k_per_freeze", None
+                ),
+                "admission_policy": utility_info.get(
+                    "admission_policy",
+                    getattr(config, "frozen_basis_admission_policy", "salience"),
+                ),
+                "utility_probe_enabled": utility_probe_enabled,
+                "utility_candidates_considered_u": utility_info.get(
+                    "utility_candidates_considered_u", 0
+                ),
+                "utility_candidates_admitted_u": utility_info.get(
+                    "utility_candidates_admitted_u", 0
+                ),
+                "utility_candidates_vetoed_u": utility_info.get(
+                    "utility_candidates_vetoed_u", 0
+                ),
+                "utility_candidates_considered_v": utility_info.get(
+                    "utility_candidates_considered_v", 0
+                ),
+                "utility_candidates_admitted_v": utility_info.get(
+                    "utility_candidates_admitted_v", 0
+                ),
+                "utility_candidates_vetoed_v": utility_info.get(
+                    "utility_candidates_vetoed_v", 0
+                ),
+                "utility_mean_delta_by_candidate": utility_info.get(
+                    "utility_mean_delta_by_candidate", []
+                ),
+                "utility_min_old_task_delta_by_candidate": utility_info.get(
+                    "utility_min_old_task_delta_by_candidate", []
+                ),
+                "utility_veto_task_indices_by_candidate": utility_info.get(
+                    "utility_veto_task_indices_by_candidate", []
+                ),
+                "utility_gate_admitted_any": bool(
+                    utility_info.get("utility_gate_admitted_any", False)
+                ),
+                "utility_gate_zero_admission_reason": utility_info.get(
+                    "utility_gate_zero_admission_reason"
                 ),
             }
         )
@@ -459,6 +566,7 @@ def parse_args() -> argparse.Namespace:
             "cllora-active",
             "cllora-active-freeze-thresh-02",
             "cllora-active-freeze-topk-2",
+            "cllora-active-freeze-utility-veto-topk-2",
         ],
         default="frozen-only",
         help="Treatment ablation variant; control arm remains unchanged.",
