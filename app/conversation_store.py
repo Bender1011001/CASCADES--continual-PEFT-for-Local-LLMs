@@ -65,8 +65,8 @@ class ConversationStore:
 
     # ── Conversations ──────────────────────────────────────────────
 
-    def create_conversation(self, title: str = "New Chat") -> dict:
-        conv_id = str(uuid.uuid4())
+    def create_conversation(self, title: str = "New Chat", conv_id: Optional[str] = None) -> dict:
+        conv_id = conv_id or str(uuid.uuid4())
         now = _utcnow()
         with self._get_conn() as conn:
             conn.execute(

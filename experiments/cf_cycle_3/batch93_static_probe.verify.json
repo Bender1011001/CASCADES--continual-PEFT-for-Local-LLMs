@@ -1,0 +1,15 @@
+{
+  "task_file": "data/task0_gsm8k_cot.jsonl",
+  "seed": 42,
+  "max_length": 256,
+  "batches": 150,
+  "batch_93_valid_labels": 1,
+  "batch_93_all_labels_masked": false,
+  "zero_label_batches": [],
+  "summary": {
+    "zero_label_batches": 0,
+    "min_valid_labels": 1,
+    "max_valid_labels": 94,
+    "max_sequence_length": 256
+  }
+}

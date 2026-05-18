@@ -1,0 +1,72 @@
+{
+  "valid": true,
+  "arm": "treatment",
+  "arm_dir": "experiments/cf_cycle_6/cllora_active_freeze_thresh_02_seed43/treatment",
+  "required_artifacts_present": true,
+  "status": {
+    "arm": "treatment",
+    "status": "completed",
+    "task_suite": "reasoning3",
+    "seed": 43,
+    "rank": 4,
+    "max_length": 256,
+    "epochs": 2,
+    "vram_threshold_mb": 7500.0,
+    "allow_nonfinite": false,
+    "allow_vram_over_threshold": false,
+    "treatment_variant": "cllora-active-freeze-thresh-02",
+    "git_revision": "7c4e01d",
+    "peak_vram_mb": 6843.90966796875,
+    "wall_time_s": 1867.082189321518
+  },
+  "metrics_parameters": {
+    "task_suite": "reasoning3",
+    "seed": 43,
+    "epochs": 2,
+    "rank": 4,
+    "max_length": 256
+  },
+  "status_parameter_mismatches": {},
+  "metrics_parameter_mismatches": {},
+  "config_parameter_mismatches": {},
+  "manifest_paths": [
+    "data/task0_gsm8k_cot.jsonl",
+    "data/task1_arc_cot.jsonl",
+    "data/task2_csqa_cot.jsonl"
+  ],
+  "expected_manifest_paths": [
+    "data/task0_gsm8k_cot.jsonl",
+    "data/task1_arc_cot.jsonl",
+    "data/task2_csqa_cot.jsonl"
+  ],
+  "peak_vram_mb": 6843.90966796875,
+  "vram_threshold_mb": 7500.0,
+  "under_vram_threshold": true,
+  "finite_metric_bad_paths": [],
+  "finite_instrumentation_bad_paths": [],
+  "finite_accuracy_matrix": true,
+  "accuracy_matrix_shape": [
+    3,
+    3
+  ],
+  "projection": {
+    "frozen_basis_nonempty": true,
+    "calls_with_frozen_basis": 3600,
+    "removed_norm_sum": 1.8263498862379492,
+    "projection_active": true,
+    "freeze_event_count": 38
+  },
+  "treatment_projection_required": true,
+  "treatment_projection_valid": true,
+  "config_summary": {
+    "arm": "treatment",
+    "task_suite": "reasoning3",
+    "seed": 43,
+    "epochs": 2,
+    "rank": 4,
+    "max_length": 256,
+    "vram_threshold_mb": 7500.0,
+    "allow_nonfinite": false,
+    "allow_vram_over_threshold": false
+  }
+}

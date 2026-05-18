@@ -131,6 +131,8 @@ async def _stream_response(req: ChatCompletionRequest):
 
     # Save assistant response to conversation
     if req.conversation_id:
+        if store.get_conversation(req.conversation_id) is None:
+            store.create_conversation("New Chat", conv_id=req.conversation_id)
         response_text = "".join(full_response)
         store.add_message(req.conversation_id, "assistant", response_text)
 
@@ -145,6 +147,10 @@ async def chat_completions(req: ChatCompletionRequest):
         user_msgs = [m for m in req.messages if m.role == "user"]
         if user_msgs:
             user_text = user_msgs[-1].content
+            
+            if store.get_conversation(req.conversation_id) is None:
+                store.create_conversation("New Chat", conv_id=req.conversation_id)
+                
             store.add_message(req.conversation_id, "user", user_text)
             # Auto-title on first message
             conv = store.get_conversation(req.conversation_id)

@@ -1,0 +1,96 @@
+{
+  "git_revision": "7c4e01d",
+  "python": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:37:03) [MSC v.1929 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "cuda_available": true,
+  "cuda_device_name": "NVIDIA GeForce RTX 4060 Ti",
+  "current_num_tasks": 4,
+  "current_task_files": [
+    "data/task2_csqa_cot.jsonl",
+    "data/task1_arc_cot.jsonl",
+    "data/task0_gsm8k_cot.jsonl",
+    "data/task3_digital_twin.jsonl"
+  ],
+  "reasoning3_task_files": [
+    "data/task0_gsm8k_cot.jsonl",
+    "data/task1_arc_cot.jsonl",
+    "data/task2_csqa_cot.jsonl"
+  ],
+  "current4_manifest": [
+    {
+      "task_index": 0,
+      "path": "data/task2_csqa_cot.jsonl",
+      "exists": true,
+      "examples": 150,
+      "bytes": 85370
+    },
+    {
+      "task_index": 1,
+      "path": "data/task1_arc_cot.jsonl",
+      "exists": true,
+      "examples": 150,
+      "bytes": 122051
+    },
+    {
+      "task_index": 2,
+      "path": "data/task0_gsm8k_cot.jsonl",
+      "exists": true,
+      "examples": 150,
+      "bytes": 88086
+    },
+    {
+      "task_index": 3,
+      "path": "data/task3_digital_twin.jsonl",
+      "exists": true,
+      "examples": 159,
+      "bytes": 28358013
+    }
+  ],
+  "reasoning3_manifest": [
+    {
+      "task_index": 0,
+      "path": "data/task0_gsm8k_cot.jsonl",
+      "exists": true,
+      "examples": 150,
+      "bytes": 88086
+    },
+    {
+      "task_index": 1,
+      "path": "data/task1_arc_cot.jsonl",
+      "exists": true,
+      "examples": 150,
+      "bytes": 122051
+    },
+    {
+      "task_index": 2,
+      "path": "data/task2_csqa_cot.jsonl",
+      "exists": true,
+      "examples": 150,
+      "bytes": 85370
+    }
+  ],
+  "train_cascades_signature": "(seed: 'int' = 42, dmole_threshold: 'float' = 0.22, model_id: 'str' = 'p-e-w/Qwen3-4B-Instruct-2507-heretic', output_prefix: 'str' = 'cascades_v10', lr_liquid: 'float' = 0.002, lr_gate: 'float' = 0.0005, lr_funlora: 'float' = 5e-05, lr_riemannian: 'float' = 0.005, epochs: 'int' = 2, rank: 'int' = 8, max_length: 'int' = 384, num_samples: 'int' = 150, eval_em: 'bool' = False, enable_sleep: 'bool' = True, config: 'AblationConfig' = AblationConfig(enable_paca=True, enable_deal=True, enable_gainlora_gate=True, enable_coso_nullspace=True, enable_cllora_reassign=True, enable_svc=True, enable_dmole_select=True, enable_funlora=True, gqa_ratio=1.0, ear_gamma=0.0001, enable_soft_ear=True, enable_principal_expansion=True, cfg_lambda=1.5, enable_ambient_dedup=True)) -> 'np.ndarray'",
+  "runner_forwarding": {
+    "forwards_rank": false,
+    "forwards_max_length": false,
+    "pops_task_files": true,
+    "calls_train_cascades_kwargs": true
+  },
+  "num_samples": {
+    "occurrence_count": 2,
+    "positions": [
+      6329,
+      7302
+    ],
+    "prepare_data_call_lines": [
+      "probe_loader = prepare_data(tokenizer, 0, base_seed=seed)",
+      "dataloader = prepare_data(tokenizer, t, base_seed=seed, max_length=max_length)",
+      "eval_loader = prepare_data(tokenizer, eval_t, base_seed=seed)"
+    ],
+    "wired_to_prepare_data": false
+  },
+  "gpu_preconditions": {
+    "ok": false,
+    "reason": "CF-cycle-1 code-mode task generated CPU-light audit/runner artifacts only; launch GPU ablation explicitly after reviewing this snapshot."
+  }
+}

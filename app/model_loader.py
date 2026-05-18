@@ -169,7 +169,7 @@ class CASCADESModel:
             prompt = "\n".join(parts)
 
         inputs = self.tokenizer(
-            prompt, return_tensors="pt", truncation=True, max_length=4096
+            prompt, return_tensors="pt", truncation=True, max_length=8192
         ).to(self.model.device)
 
         # Set up streaming
@@ -191,8 +191,19 @@ class CASCADESModel:
         }
 
         # Generate in background thread
+        def _generate_wrapper():
+            try:
+                self.model.generate(**generation_kwargs)
+            except Exception as e:
+                import traceback
+                print(f"\n🚨 Generation exception: {e}")
+                traceback.print_exc()
+                # Unblock the streamer on error
+                streamer.text_queue.put("\n\n[ERROR: Model generation crashed! Check server logs]")
+                streamer.text_queue.put(streamer.stop_signal)
+
         thread = threading.Thread(
-            target=self.model.generate, kwargs=generation_kwargs
+            target=_generate_wrapper
         )
         thread.start()
 

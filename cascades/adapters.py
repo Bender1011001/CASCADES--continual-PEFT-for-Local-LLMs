@@ -377,6 +377,28 @@ class CASCADESAdapter(nn.Module):
         SVD truncation if needed.
         """
         with torch.no_grad():
+            top_k = getattr(self.config, "frozen_basis_top_k_per_freeze", None)
+            if top_k is not None:
+                top_k = int(top_k)
+                if top_k <= 0:
+                    top_k = None
+
+            def limit_admission_by_top_k(
+                scores: torch.Tensor, keep_mask: torch.Tensor
+            ) -> torch.Tensor:
+                if top_k is None or int(keep_mask.sum().item()) <= top_k:
+                    return keep_mask
+
+                kept_indices = torch.nonzero(keep_mask, as_tuple=False).flatten()
+                top_rel = torch.topk(
+                    scores[kept_indices], k=top_k, largest=True, sorted=False
+                ).indices
+                top_indices = kept_indices[top_rel]
+                top_indices, _ = torch.sort(top_indices)
+                limited = torch.zeros_like(keep_mask)
+                limited[top_indices] = True
+                return limited
+
             S = self.streaming_sketch_U  # (d_out, rank)
             if S.norm() < 1e-8:
                 return
@@ -396,11 +418,16 @@ class CASCADESAdapter(nn.Module):
             if total_variance < 1e-6:
                 return
 
-            # Keep eigenvectors capturing >= 5% of variance
-            keep_mask = eigvals / total_variance > 0.05
+            # Keep eigenvectors above the configured structural variance threshold.
+            frozen_basis_variance_threshold = getattr(
+                self.config, "frozen_basis_variance_threshold", 0.05
+            )
+            normalized_eigvals = eigvals / total_variance
+            keep_mask = normalized_eigvals > frozen_basis_variance_threshold
             if not keep_mask.any():
                 # At least keep the top structural direction
                 keep_mask[-1] = True
+            keep_mask = limit_admission_by_top_k(normalized_eigvals, keep_mask)
 
             kept_vecs = eigvecs[:, keep_mask]  # (rank, k)
 
@@ -438,9 +465,11 @@ class CASCADESAdapter(nn.Module):
                     U_sV, S_sV, _ = torch.linalg.svd(S_norm_V, full_matrices=False)
                     tot_var_V = (S_sV ** 2).sum()
                     if tot_var_V > 1e-6:
-                        keep_V = (S_sV ** 2) / tot_var_V > 0.05
+                        normalized_var_V = (S_sV ** 2) / tot_var_V
+                        keep_V = normalized_var_V > frozen_basis_variance_threshold
                         if not keep_V.any():
                             keep_V[0] = True
+                        keep_V = limit_admission_by_top_k(normalized_var_V, keep_V)
                         Q_new_V = U_sV[:, keep_V]
 
                         if (

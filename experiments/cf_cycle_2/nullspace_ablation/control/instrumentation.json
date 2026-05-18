@@ -1,0 +1,31 @@
+{
+  "ear_events": [],
+  "freeze_events": [],
+  "reassign": {
+    "calls_total": 0,
+    "calls_with_null_sketch": 0,
+    "calls_with_frozen_basis": 0,
+    "max_frozen_cols": 0,
+    "removed_norm_sum": 0.0
+  },
+  "vram": [
+    {
+      "tag": "after_model_load",
+      "allocated_mb": 3296.01171875,
+      "reserved_mb": 4084.0,
+      "max_allocated_mb": 4037.5302734375
+    },
+    {
+      "tag": "after_adapter_injection",
+      "allocated_mb": 3315.51708984375,
+      "reserved_mb": 4094.0,
+      "max_allocated_mb": 3486.8486328125
+    },
+    {
+      "tag": "after_first_backward",
+      "allocated_mb": 3490.7919921875,
+      "reserved_mb": 6804.0,
+      "max_allocated_mb": 6611.81787109375
+    }
+  ]
+}

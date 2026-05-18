@@ -1,0 +1,71 @@
+{
+  "task_file": "data/task0_gsm8k_cot.jsonl",
+  "seed": 42,
+  "max_length": 256,
+  "batch_93_dataset_idx_zero_based": 9,
+  "batch_93_jsonl_line_one_based": 10,
+  "batch_93_all_labels_masked": true,
+  "inspected_batches": [
+    {
+      "batch": 93,
+      "dataset_idx_zero_based": 9,
+      "jsonl_line_one_based": 10,
+      "prompt_chars": 683,
+      "response_chars": 586,
+      "response_words": 103,
+      "prompt_preview": "The Rotary Club is holding its annual fundraising Omelet Breakfast, with tickets sold in advance. The tickets come in different price levels, for young children",
+      "prompt_tokens": 304,
+      "response_tokens": 263,
+      "total_tokens": 567,
+      "truncated": true,
+      "label_tokens_after_truncation": 0,
+      "all_labels_masked": true,
+      "first_label_position": null
+    }
+  ],
+  "zero_label_examples": [
+    {
+      "dataset_idx_zero_based": 9,
+      "jsonl_line_one_based": 10,
+      "position_in_shuffle_one_based": 93,
+      "prompt_tokens": 304,
+      "response_tokens": 263,
+      "total_tokens": 567,
+      "truncated": true,
+      "label_tokens_after_truncation": 0,
+      "all_labels_masked": true,
+      "first_label_position": null
+    },
+    {
+      "dataset_idx_zero_based": 74,
+      "jsonl_line_one_based": 75,
+      "position_in_shuffle_one_based": 132,
+      "prompt_tokens": 259,
+      "response_tokens": 180,
+      "total_tokens": 439,
+      "truncated": true,
+      "label_tokens_after_truncation": 0,
+      "all_labels_masked": true,
+      "first_label_position": null
+    },
+    {
+      "dataset_idx_zero_based": 91,
+      "jsonl_line_one_based": 92,
+      "position_in_shuffle_one_based": 135,
+      "prompt_tokens": 261,
+      "response_tokens": 280,
+      "total_tokens": 541,
+      "truncated": true,
+      "label_tokens_after_truncation": 0,
+      "all_labels_masked": true,
+      "first_label_position": null
+    }
+  ],
+  "summary": {
+    "examples": 150,
+    "truncated_examples": 121,
+    "zero_label_examples": 3,
+    "min_label_tokens_after_truncation": 0,
+    "max_prompt_tokens": 304
+  }
+}

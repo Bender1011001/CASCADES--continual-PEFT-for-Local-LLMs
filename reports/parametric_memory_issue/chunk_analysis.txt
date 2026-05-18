@@ -1,0 +1,81 @@
+Total chunks: 6577
+
+============================================================
+Category                         Chunks    Size MB
+============================================================
+Google Fit/Health                  3121     334.0
+Gemini/AI Conversations            2450     214.3
+Other/Unknown                       376      31.7
+Google Search History               212      24.9
+Calendar Events                      69       8.0
+GitHub/Git Activity                  60       5.6
+Google Drive Files                   55       6.1
+Chat/Messages                        54       4.9
+Gmail/Email                          48       4.2
+Chrome Browsing History              42       4.7
+Settings/Preferences                 29       2.8
+Purchases/Transactions               23       2.3
+Contacts                             20       1.9
+YouTube Activity                      6       0.7
+NPM/Package Registry                  5       0.5
+Other Activity                        4       0.4
+Takeout Metadata/JSON                 2       0.1
+Maps/Location Activity                1       0.1
+
+============================================================
+SAMPLE CONTENT PER CATEGORY
+============================================================
+
+--- Google Fit/Health (3121 chunks) ---
+  ================================================================================   === File: Chrome\History.json (Part 56) ===  014ebd-2b51-47df-8263-48da41ac2fdb?rid=1e87ef88-2282-46c4-88f5-e575d08
+
+--- Gemini/AI Conversations (2450 chunks) ---
+  ================================================================================   === File: My Activity\Gemini Apps\AncestryDNA-5d657e103671558f.txt ===  #AncestryDNA raw data download #This file w
+
+--- Other/Unknown (376 chunks) ---
+  ================================================================================   === File: Chrome\History.json (Part 2) ===  NXrkRCBv0xV2w4VeHOXgLWImPAIuwjPpF5RDAcvRJlInI4zHnujI0Tg_ai3a4wn-yWWKj6L
+
+--- Google Search History (212 chunks) ---
+  ================================================================================   === File: Chrome\History.json ===  {   "Browser History": [     {       "favicon_url": "https://ssl.gstatic.com/ui/
+
+--- Calendar Events (69 chunks) ---
+  ================================================================================   === File: Chrome\History.json (Part 142) ===  1001/FBA-Bench",       "time_usec": 1761244752170894,       "client_i
+
+--- GitHub/Git Activity (60 chunks) ---
+  ================================================================================   === File: Chrome\History.json (Part 16) ===  723d8016cca307896f7254d8e421c",       "time_usec": 1771185933396083,  
+
+--- Google Drive Files (55 chunks) ---
+  ================================================================================   === File: Chrome\History.json (Part 4) ===  R7wdaxoMEH6krEg=="     },     {       "favicon_url": "https://ssl.gstat
+
+--- Chat/Messages (54 chunks) ---
+  ================================================================================   === File: Chrome\History.json (Part 24) ===        "time_usec": 1770767143602288,       "client_id": "TP6orRkR7wdax
+
+--- Gmail/Email (48 chunks) ---
+  ================================================================================   === File: Chrome\Addresses and more.json ===  {   "Autofill": [     {       "usage_timestamp": [         1341412863
+
+--- Chrome Browsing History (42 chunks) ---
+  ================================================================================   === File: My Activity\Chrome\MyActivity.html (Part 2) ===  i=1&amp;sttick=0 Feb 22, 2026, 10:38:42 PM PST Products:
+
+--- Settings/Preferences (29 chunks) ---
+  ================================================================================   === File: Chrome\History.json (Part 15) ===   "iXc0e3dWJo3Fm44NxnqJZg=="     },     {       "favicon_url": "https:/
+
+--- Purchases/Transactions (23 chunks) ---
+  ================================================================================   === File: Chrome\History.json (Part 9) ===  rc2xXO8v7QtrID_4uQyQJqwbUOvt9aHHuRHivxAoHBns2blkjXKNuLQmNTvka-pqBEUPnG6
+
+--- Contacts (20 chunks) ---
+  ================================================================================   === File: package-lock.json ===  {   "name": "Takeout",   "lockfileVersion": 3,   "requires": true,   "packages": {
+
+--- YouTube Activity (6 chunks) ---
+  ================================================================================   === File: My Activity\Google Play Store\MyActivity.html (Part 8) ===   Play Store Why is this here? &emsp;This acti
+
+--- NPM/Package Registry (5 chunks) ---
+  ================================================================================   === File: Chrome\History.json (Part 238) ===  ps.com/portal/package/details?selectedTrckNum=9234690280802700683485&
+
+--- Other Activity (4 chunks) ---
+  ================================================================================   === File: My Activity\Discover\MyActivity.html ===  My Activity History Discover 9 cards in your feed Feb 25, 2026,
+
+--- Takeout Metadata/JSON (2 chunks) ---
+  ================================================================================   === File: Chrome\Addresses and more.json (Part 2) ===  status": "VERIFICATION_STATUS_UNSPECIFIED"         },       
+
+--- Maps/Location Activity (1 chunks) ---
+  ================================================================================   === File: My Activity\Assistant\MyActivity.html ===  My Activity History Assistant Said Turn off flashlight Feb 6, 

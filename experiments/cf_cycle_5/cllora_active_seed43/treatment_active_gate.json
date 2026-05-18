@@ -1,0 +1,39 @@
+{
+  "valid": true,
+  "arm": "treatment",
+  "arm_dir": "experiments/cf_cycle_5/cllora_active_seed43/treatment",
+  "failures": [],
+  "config_checks": {
+    "treatment_variant": true,
+    "run_status_treatment_variant": true,
+    "enable_coso_nullspace": true,
+    "enable_cllora_reassign": true,
+    "enable_soft_ear": true,
+    "ear_gamma": true
+  },
+  "instrumentation_checks": {
+    "calls_with_frozen_basis_positive": true,
+    "removed_norm_sum_positive": true,
+    "removed_norm_per_frozen_call_finite": true,
+    "calls_with_active_reassign_path_positive": true,
+    "active_adjustment_norm_sum_finite": true
+  },
+  "active_adjustment_positive": true,
+  "config_summary": {
+    "treatment_variant": "cllora-active",
+    "run_status_treatment_variant": "cllora-active",
+    "enable_coso_nullspace": true,
+    "enable_cllora_reassign": true,
+    "enable_soft_ear": true,
+    "ear_gamma": 0.0001
+  },
+  "instrumentation_summary": {
+    "calls_with_frozen_basis": 3600,
+    "removed_norm_sum": 2.195456126228237,
+    "removed_norm_per_frozen_call": 0.000609848923952288,
+    "calls_with_active_reassign_enabled": 6900,
+    "calls_with_active_reassign_path": 6900,
+    "active_adjustment_norm_sum": 49.50860421800462,
+    "active_adjustment_norm_max": 0.12196692824363708
+  }
+}

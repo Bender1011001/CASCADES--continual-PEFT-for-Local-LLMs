@@ -1,0 +1,87 @@
+Loading checkpoint...
+Checkpoint keys: 336
+
+Adapter-related keys in checkpoint: 336
+  model.layers.0.self_attn.q_proj.adapter.U_shared: torch.Size([4096, 8])
+  model.layers.0.self_attn.q_proj.adapter.V_shared: torch.Size([8, 2560])
+  model.layers.0.self_attn.q_proj.adapter.liquid_core.core_pool: torch.Size([4, 8, 8])
+  model.layers.0.self_attn.q_proj.adapter.gate_proj.weight: torch.Size([1, 16])
+  model.layers.0.self_attn.q_proj.adapter.gate_proj.bias: torch.Size([1])
+  model.layers.0.self_attn.v_proj.adapter.U_shared: torch.Size([1024, 8])
+  model.layers.0.self_attn.v_proj.adapter.V_shared: torch.Size([8, 2560])
+  model.layers.0.self_attn.v_proj.adapter.liquid_core.core_pool: torch.Size([4, 8, 8])
+  model.layers.0.self_attn.v_proj.adapter.gate_proj.weight: torch.Size([1, 16])
+  model.layers.0.self_attn.v_proj.adapter.gate_proj.bias: torch.Size([1])
+  model.layers.0.mlp.up_proj.adapter.U_shared: torch.Size([9728, 8])
+  model.layers.0.mlp.up_proj.adapter.V_shared: torch.Size([8, 2560])
+  model.layers.0.mlp.up_proj.adapter.liquid_core.core_pool: torch.Size([4, 8, 8])
+  model.layers.0.mlp.up_proj.adapter.gate_proj.weight: torch.Size([1, 16])
+  model.layers.0.mlp.up_proj.adapter.gate_proj.bias: torch.Size([1])
+  model.layers.0.mlp.down_proj.adapter.U_shared: torch.Size([2560, 8])
+  model.layers.0.mlp.down_proj.adapter.V_shared: torch.Size([8, 9728])
+  model.layers.0.mlp.down_proj.adapter.liquid_core.core_pool: torch.Size([4, 8, 8])
+  model.layers.0.mlp.down_proj.adapter.gate_proj.weight: torch.Size([1, 16])
+  model.layers.0.mlp.down_proj.adapter.gate_proj.bias: torch.Size([1])
+
+Loading model...
+
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]
+Loading weights:   0%|          | 1/398 [00:00<01:52,  3.52it/s]
+Loading weights:   1%|          | 3/398 [00:00<01:33,  4.23it/s]
+Loading weights:   1%|1         | 4/398 [00:00<01:27,  4.48it/s]
+Loading weights:   1%|1         | 5/398 [00:01<01:26,  4.55it/s]
+Loading weights:   2%|2         | 8/398 [00:01<00:54,  7.17it/s]
+Loading weights:   2%|2         | 9/398 [00:01<01:01,  6.36it/s]
+Loading weights:   3%|2         | 11/398 [00:01<00:56,  6.85it/s]
+Loading weights:   3%|3         | 12/398 [00:02<01:02,  6.15it/s]
+Loading weights:   4%|3         | 14/398 [00:02<00:50,  7.54it/s]
+Loading weights:   4%|3         | 15/398 [00:02<00:58,  6.57it/s]
+Loading weights:   4%|4         | 16/398 [00:02<01:05,  5.80it/s]
+Loading weights:   5%|4         | 19/398 [00:02<00:44,  8.61it/s]
+Loading weights:   5%|5         | 20/398 [00:03<00:54,  6.93it/s]
+Loading weights:  53%|#####3    | 212/398 [00:03<00:00, 313.18it/s]
+Loading weights:  97%|#########7| 388/398 [00:03<00:00, 580.55it/s]
+Loading weights: 100%|##########| 398/398 [00:03<00:00, 117.99it/s]
+Injecting adapters...
+v10 GQA detected: 32Q / 8KV = 4.0x broadcast ratio
+Injected: 144 full CASCADES + 0 FunLoRA rank-1
+
+Model state keys: 4251
+Checkpoint keys: 336
+Matched: 80
+Model-only: 4171
+Checkpoint-only: 256
+
+Adapter keys in model: 2592
+  model.layers.18.self_attn.q_proj.adapter.ema_fast_U
+  model.layers.30.mlp.down_proj.adapter.V_shared
+  model.layers.31.mlp.up_proj.adapter.liquid_core.core_keys
+  model.layers.14.mlp.up_proj.adapter.liquid_core.core_pool
+  model.layers.17.self_attn.v_proj.adapter.liquid_core.core_pool
+  model.layers.33.self_attn.v_proj.adapter.streaming_sketch_U
+  model.layers.20.mlp.down_proj.adapter.Q_null_V
+  model.layers.24.self_attn.q_proj.adapter.V_shared
+  model.layers.31.mlp.up_proj.adapter.frozen_null_basis
+  model.layers.11.mlp.up_proj.adapter.ema_slow_V
+  model.layers.28.mlp.down_proj.adapter.U_shared
+  model.layers.12.mlp.down_proj.adapter.ema_slow_V
+  model.layers.4.mlp.down_proj.adapter.V_shared
+  model.layers.23.self_attn.v_proj.adapter.ema_slow_U
+  model.layers.20.mlp.up_proj.adapter.ema_fast_U
+  model.layers.35.self_attn.q_proj.adapter.ema_fast_U
+  model.layers.2.self_attn.v_proj.adapter.gate_proj.bias
+  model.layers.21.mlp.down_proj.adapter.gate_proj.bias
+  model.layers.35.self_attn.v_proj.adapter.gate_proj.bias
+  model.layers.6.mlp.down_proj.adapter.U_shared
+
+Checkpoint adapter keys NOT in model: 256
+  model.layers.26.mlp.down_proj.adapter.a
+  model.layers.26.self_attn.v_proj.adapter.b
+  model.layers.8.mlp.down_proj.adapter.a
+  model.layers.35.self_attn.v_proj.adapter.a
+  model.layers.19.self_attn.v_proj.adapter.a
+  model.layers.15.self_attn.v_proj.adapter.a
+  model.layers.5.self_attn.q_proj.adapter.a
+  model.layers.21.self_attn.q_proj.adapter.b
+  model.layers.27.self_attn.v_proj.adapter.a
+  model.layers.17.self_attn.q_proj.adapter.b

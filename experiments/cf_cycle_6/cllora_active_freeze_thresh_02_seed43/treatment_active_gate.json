@@ -1,0 +1,41 @@
+{
+  "valid": true,
+  "arm": "treatment",
+  "arm_dir": "experiments/cf_cycle_6/cllora_active_freeze_thresh_02_seed43/treatment",
+  "failures": [],
+  "config_checks": {
+    "treatment_variant": true,
+    "run_status_treatment_variant": true,
+    "enable_coso_nullspace": true,
+    "enable_cllora_reassign": true,
+    "enable_soft_ear": true,
+    "ear_gamma": true,
+    "frozen_basis_variance_threshold": true
+  },
+  "instrumentation_checks": {
+    "calls_with_frozen_basis_positive": true,
+    "removed_norm_sum_positive": true,
+    "removed_norm_per_frozen_call_finite": true,
+    "calls_with_active_reassign_path_positive": true,
+    "active_adjustment_norm_sum_finite": true
+  },
+  "active_adjustment_positive": true,
+  "config_summary": {
+    "treatment_variant": "cllora-active-freeze-thresh-02",
+    "run_status_treatment_variant": "cllora-active-freeze-thresh-02",
+    "enable_coso_nullspace": true,
+    "enable_cllora_reassign": true,
+    "enable_soft_ear": true,
+    "ear_gamma": 0.0001,
+    "frozen_basis_variance_threshold": 0.02
+  },
+  "instrumentation_summary": {
+    "calls_with_frozen_basis": 3600,
+    "removed_norm_sum": 1.8263498862379492,
+    "removed_norm_per_frozen_call": 0.0005073194128438748,
+    "calls_with_active_reassign_enabled": 6900,
+    "calls_with_active_reassign_path": 6900,
+    "active_adjustment_norm_sum": 48.84042342959583,
+    "active_adjustment_norm_max": 0.12196692824363708
+  }
+}

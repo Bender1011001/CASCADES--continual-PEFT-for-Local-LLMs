@@ -1,4 +1,15 @@
+---
+project: app
+status: working
+updated: 2026-03-14
+---
+
 # CASCADES Chat App
+
+## Resume
+- **Pick up at**: [Review and update]
+- **Last session**: [Auto-migrated to CONTEXT v2]
+- **Blocked on**: Nothing
 
 ## Status
 - **Working**: FastAPI server, chat UI, conversation CRUD, SQLite storage, memory flagging, JSONL export

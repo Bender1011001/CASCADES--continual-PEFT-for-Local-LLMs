@@ -1,0 +1,23 @@
+[
+  {
+    "task_index": 0,
+    "path": "data/task0_gsm8k_cot.jsonl",
+    "exists": true,
+    "examples": 150,
+    "bytes": 88086
+  },
+  {
+    "task_index": 1,
+    "path": "data/task1_arc_cot.jsonl",
+    "exists": true,
+    "examples": 150,
+    "bytes": 122051
+  },
+  {
+    "task_index": 2,
+    "path": "data/task2_csqa_cot.jsonl",
+    "exists": true,
+    "examples": 150,
+    "bytes": 85370
+  }
+]

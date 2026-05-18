@@ -1,0 +1,39 @@
+{
+  "task_suite": "reasoning3",
+  "model_id": "p-e-w/Qwen3-4B-Instruct-2507-heretic",
+  "seed": 42,
+  "max_length": 256,
+  "valid": true,
+  "tasks": [
+    {
+      "task_index": 0,
+      "path": "data/task0_gsm8k_cot.jsonl",
+      "batches": 150,
+      "zero_label_batches": [],
+      "min_valid_labels": 1,
+      "max_valid_labels": 94,
+      "max_sequence_length": 256,
+      "valid": true
+    },
+    {
+      "task_index": 1,
+      "path": "data/task1_arc_cot.jsonl",
+      "batches": 150,
+      "zero_label_batches": [],
+      "min_valid_labels": 1,
+      "max_valid_labels": 81,
+      "max_sequence_length": 256,
+      "valid": true
+    },
+    {
+      "task_index": 2,
+      "path": "data/task2_csqa_cot.jsonl",
+      "batches": 150,
+      "zero_label_batches": [],
+      "min_valid_labels": 37,
+      "max_valid_labels": 81,
+      "max_sequence_length": 256,
+      "valid": true
+    }
+  ]
+}

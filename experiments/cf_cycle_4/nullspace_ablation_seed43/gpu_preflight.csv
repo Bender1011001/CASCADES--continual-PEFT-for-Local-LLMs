@@ -1,0 +1,2 @@
+index, name, memory.used [MiB], memory.total [MiB], utilization.gpu [%]
+0, NVIDIA GeForce RTX 4060 Ti, 694 MiB, 8188 MiB, 0 %

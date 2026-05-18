@@ -1,0 +1,25 @@
+============================================================
+CASCADES TRAINING PIPELINE
+============================================================
+  Model: p-e-w/Qwen3-4B-Instruct-2507-heretic
+  Device: cuda
+  Config: AblationConfig(enable_paca=True, enable_deal=True, enable_gainlora_gate=True, enable_coso_nullspace=False, enable_cllora_reassign=False, enable_svc=True, enable_dmole_select=True, enable_funlora=True, gqa_ratio=1.0, ear_gamma=0.0001, enable_soft_ear=True, enable_principal_expansion=True, cfg_lambda=1.5, enable_ambient_dedup=True)
+  Rank: 4, MaxLen: 256, Epochs: 2
+  LR: liquid=0.002, riemannian=0.005
+============================================================
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights:   0%|          | 1/398 [00:00<01:57,  3.37it/s]Loading weights:   1%|▏         | 5/398 [00:00<00:26, 14.67it/s]Loading weights:   6%|▌         | 22/398 [00:00<00:06, 61.53it/s]Loading weights:   9%|▉         | 36/398 [00:00<00:04, 83.02it/s]Loading weights:  12%|█▏        | 48/398 [00:00<00:03, 92.03it/s]Loading weights:  15%|█▌        | 60/398 [00:00<00:03, 98.33it/s]Loading weights:  19%|█▉        | 77/398 [00:00<00:02, 117.00it/s]Loading weights:  23%|██▎       | 91/398 [00:01<00:02, 121.14it/s]Loading weights:  26%|██▌       | 104/398 [00:01<00:02, 115.78it/s]Loading weights:  30%|███       | 121/398 [00:01<00:02, 127.83it/s]Loading weights:  34%|███▍      | 135/398 [00:01<00:02, 128.23it/s]Loading weights:  37%|███▋      | 149/398 [00:01<00:02, 122.72it/s]Loading weights:  41%|████▏     | 165/398 [00:01<00:01, 130.44it/s]Loading weights:  45%|████▍     | 179/398 [00:01<00:01, 129.70it/s]Loading weights:  48%|████▊     | 193/398 [00:01<00:01, 124.08it/s]Loading weights:  53%|█████▎    | 209/398 [00:01<00:01, 131.13it/s]Loading weights:  56%|█████▌    | 223/398 [00:02<00:01, 130.55it/s]Loading weights:  60%|█████▉    | 237/398 [00:02<00:01, 125.32it/s]Loading weights:  63%|██████▎   | 251/398 [00:02<00:01, 129.29it/s]Loading weights:  67%|██████▋   | 267/398 [00:02<00:00, 131.76it/s]Loading weights:  71%|███████   | 281/398 [00:02<00:00, 125.02it/s]Loading weights:  75%|███████▍  | 297/398 [00:02<00:00, 132.10it/s]Loading weights:  78%|███████▊  | 311/398 [00:02<00:00, 131.72it/s]Loading weights:  82%|████████▏ | 325/398 [00:02<00:00, 125.64it/s]Loading weights:  86%|████████▌ | 341/398 [00:02<00:00, 132.26it/s]Loading weights:  89%|████████▉ | 355/398 [00:03<00:00, 131.35it/s]Loading weights:  93%|█████████▎| 369/398 [00:03<00:00, 124.68it/s]Loading weights:  97%|█████████▋| 385/398 [00:03<00:00, 132.11it/s]Loading weights: 100%|██████████| 398/398 [00:03<00:00, 116.60it/s]
+  [VRAM] after_model_load: alloc=3296MB peak=4038MB reserved=4084MB free=4104MB (total=8188MB)
+Quantization noise std: 59.799622
+D-MoLE: 13/253 layers marked critical (threshold=0.22)
+  [VRAM] cache_clear@after_dmole_probe: freed=0MB, now=3304MB
+v10 GQA detected: 32Q / 8KV = 4.0x broadcast ratio
+Injected: 9 full CASCADES + 135 FunLoRA rank-1
+  [VRAM] after_adapter_injection: alloc=3316MB peak=3487MB reserved=4094MB free=4094MB (total=8188MB)
+Sleep Consolidation Engine: ENABLED (ambient dedup=ON)
+
+============================================================
+--- Training Task 0 ---
+============================================================
+  [VRAM] after_first_backward: alloc=3491MB peak=6612MB reserved=6804MB free=1384MB (total=8188MB)
+    [Ep 1 B 50] loss=2.0690

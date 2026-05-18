@@ -76,7 +76,7 @@ _Note: CASCADES unquantized (fp32) has demonstrated positive BWT (+2.01% on an 8
 
 ### 4.3 Key Findings
 
-1. **Recovery from Catastrophic Forgetting:** CASCADES v9 successfully reduced backward transfer regression to **-1.46%**, beating standard LoRA by a massive margin and surpassing our >-2% stability target on a severely memory-constrained model.
+1. **Significant Forgetting Reduction:** CASCADES v9 achieved backward transfer of **-1.46%** in the best observed run (seed 42), far exceeding the >-2% stability target on a severely memory-constrained model. However, BWT varies across model variants and configurations (from +2.42% to -32.96% in saved experiments), indicating sensitivity to hyperparameters and data distribution.
 2. **Algorithmic Transfer:** Task 2 (Algorithmic Synthesis) maintained nearly 50% accuracy on highly complex problems, proving the model can isolate and continuously adapt deep internal algorithms without overwriting fundamental reasoning pathways.
 3. **VRAM Efficiency:** The D-MoLE allocation and FunLoRA strategies successfully compacted the architecture footprint to 5.2GB, allowing for aggressive training sequences on 8GB consumer GPUs.
 

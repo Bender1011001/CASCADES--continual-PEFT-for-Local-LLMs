@@ -1,0 +1,78 @@
+============================================================
+Graph-Powered Self-Synthesizer
+Mining Neo4j Knowledge Graph ΓåÆ Dense Q&A Training Data
+============================================================
+
+Connecting to Neo4j at bolt://localhost:7687...
+Querying knowledge graph...
+  Relationship types:
+    VISITED: 42613
+    KNOWS: 203
+    USES: 38
+    RESEARCHES: 26
+    SEARCHED_FOR: 13
+    CONTRIBUTES_TO: 4
+    INTERESTED_IN: 2
+
+Relationship types found:
+  KNOWS: 203 connections
+  VISITED: 200 connections
+  USES: 38 connections
+  RESEARCHES: 26 connections
+  CONTRIBUTES_TO: 4 connections
+  INTERESTED_IN: 2 connections
+
+Synthesizing Q&A pairs...
+Generated 193 Q&A training pairs
+
+============================================================
+SAMPLE Q&A PAIRS (showing 15)
+============================================================
+
+  Q: What is Transformer in relation to Bender1011001?
+  A: Transformer is a Concept that Bender1011001 researchess. Transformer.
+
+  Q: What sites does Bender1011001 frequent?
+  A: Bender1011001 visits these websites: registry.npmjs.org: - / react-dom-19.2.3.tgz, registry.npmjs.org: - / rollup-win32-ia32-msvc-4.59.0.tgz, registry.npmjs.org: - / rollup-win32-x64-gnu-4.59.0.tgz, r
+
+  Q: List the websites Bender1011001 has visited.
+  A: Bender1011001 visits these websites: registry.npmjs.org: - / gen-mapping-0.3.13.tgz, registry.npmjs.org: - / resolve-uri-3.1.2.tgz, registry.npmjs.org: - / module-importer-1.0.1.tgz, registry.npmjs.or
+
+  Q: What is Knowledge Graph in relation to Bender1011001?
+  A: Knowledge Graph is a Concept that Bender1011001 researchess. Knowledge Graph.
+
+  Q: What tools and technologies does Bender1011001 use?
+  A: Bender1011001 uses the following tools and technologies: Arduino, A100, Docker, Transformers, Rtx 4060, 4060 Ti, Node.Js, Kubernetes, Next.Js, Nextjs.
+
+  Q: List the websites Bender1011001 has visited.
+  A: Bender1011001 visits these websites: registry.npmjs.org: - / core-0.17.0.tgz, registry.npmjs.org: - / globals-14.0.0.tgz, registry.npmjs.org: - / core-0.19.1.tgz, registry.npmjs.org: - / regexpp-4.12.
+
+  Q: What is Cryptocurrency in relation to Bender1011001?
+  A: Cryptocurrency is a Concept that Bender1011001 researchess. Cryptocurrency.
+
+  Q: What sites does Bender1011001 frequent?
+  A: Bender1011001 visits these websites: registry.npmjs.org: - / chokidar-3.6.0.tgz, GitHub: chalk / chalk, paulmillr.com: funding, registry.npmjs.org: - / cssesc-3.0.0.tgz, registry.npmjs.org: - / chalk-
+
+  Q: Who does Bender1011001 know?
+  A: Bender1011001 knows: The Ascendant, North Node, The Sun, Heatherlilley590, Andrewdarcy530, Sendername, Recipient Email, Pass, Trafficdivision, 8192X4096.
+
+  Q: What is Tail Risk Engine in relation to Bender1011001?
+  A: Tail Risk Engine is a Project that Bender1011001 contributes tos. Tail Risk Engine.
+
+  Q: Who does Bender1011001 know?
+  A: Bender1011001 knows: John Doe, Example, Bradb, Qhull Bug, Qhull, Hannu, Git, Html5Validator-Action, 147673094+Bender1011001, Press.
+
+  Q: What is Fine-Tuning in relation to Bender1011001?
+  A: Fine-Tuning is a Concept that Bender1011001 researchess. Fine-Tuning.
+
+  Q: What websites does Bender1011001 visit?
+  A: Bender1011001 visits these websites: registry.npmjs.org: - / eslint-plugin-react-refresh-0.4.26.tgz, registry.npmjs.org: - / eslint-plugin-react-hooks-7.0.1.tgz, registry.npmjs.org: - / eslint-scope-8
+
+  Q: Who are Bender1011001's contacts?
+  A: Bender1011001 knows: Zmzhao6-C, Hcpnudt, Wanyy, Observability, Elliot Meyerson, Battery Positive, Password, Alerts, Firstname Lastname, Alex Rivera.
+
+  Q: What sites does Bender1011001 frequent?
+  A: Bender1011001 visits these websites: GitHub: packages / plugin-react-swc, registry.npmjs.org: - / word-wrap-1.2.5.tgz, registry.npmjs.org: - / yocto-queue-0.1.0.tgz, vite.dev: guide / rolldown, react.
+
+≡ƒÆ╛ Saved to E:\digital-twin\training_data\graph_synthesized_qa.jsonl
+   193 Q&A pairs, 59.9 KB

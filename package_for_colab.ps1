@@ -9,8 +9,14 @@ If (Test-Path $ZipFile) {
 
 Write-Host "Creating minimal CASCADES Colab package..." -ForegroundColor Cyan
 
-# We ONLY take the required source files, skipping models, data, and cache
+# Clean out pycache and artifacts before zipping
+Get-ChildItem -Path "cascades", "app" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "app/data/conversations.db" -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path "app/data/checkpoints" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+
+# Package only source files
 Compress-Archive -Path "cascades", "app", "local_extract_cascades.py", "requirements.txt" -DestinationPath $ZipFile
 
-Write-Host "Done! The file $ZipFile is ready." -ForegroundColor Green
-Write-Host "Upload this small zip file to Google Drive along with the takeout_chunks_32k folder."
+$sizeMB = [math]::Round((Get-Item $ZipFile).Length / 1KB)
+Write-Host "Done! $ZipFile ($sizeMB KB)" -ForegroundColor Green
+Write-Host "Upload this to Google Drive along with abliteratedqwen3.zip and takeout_chunks_32k/"

@@ -1,0 +1,28 @@
+{
+  "arm": "control",
+  "task_suite": "current4",
+  "model_id": "p-e-w/Qwen3-4B-Instruct-2507-heretic",
+  "seed": 42,
+  "epochs": 2,
+  "rank": 8,
+  "max_length": 384,
+  "eval_em": false,
+  "enable_sleep": true,
+  "ablation_config": {
+    "enable_paca": true,
+    "enable_deal": true,
+    "enable_gainlora_gate": true,
+    "enable_coso_nullspace": false,
+    "enable_cllora_reassign": false,
+    "enable_svc": true,
+    "enable_dmole_select": true,
+    "enable_funlora": true,
+    "gqa_ratio": 1.0,
+    "ear_gamma": 0.0001,
+    "enable_soft_ear": true,
+    "enable_principal_expansion": true,
+    "cfg_lambda": 1.5,
+    "enable_ambient_dedup": true
+  },
+  "git_revision": "7c4e01d"
+}

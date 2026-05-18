@@ -1,0 +1,312 @@
+============================================================
+CASCADES TRAINING PIPELINE
+============================================================
+  Model: p-e-w/Qwen3-4B-Instruct-2507-heretic
+  Device: cuda
+  Config: AblationConfig(enable_paca=True, enable_deal=True, enable_gainlora_gate=True, enable_coso_nullspace=True, enable_cllora_reassign=True, enable_svc=True, enable_dmole_select=True, enable_funlora=True, gqa_ratio=1.0, ear_gamma=0.0001, enable_soft_ear=True, enable_principal_expansion=True, cfg_lambda=1.5, enable_ambient_dedup=True, frozen_basis_variance_threshold=0.05, frozen_basis_top_k_per_freeze=2)
+  Rank: 4, MaxLen: 256, Epochs: 2
+  LR: liquid=0.002, riemannian=0.005
+============================================================
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights:   0%|          | 1/398 [00:00<01:57,  3.37it/s]Loading weights:   1%|▏         | 5/398 [00:00<00:26, 14.74it/s]Loading weights:   6%|▌         | 22/398 [00:00<00:06, 61.48it/s]Loading weights:   9%|▉         | 36/398 [00:00<00:04, 83.60it/s]Loading weights:  12%|█▏        | 48/398 [00:00<00:03, 92.96it/s]Loading weights:  15%|█▌        | 60/398 [00:00<00:03, 99.32it/s]Loading weights:  19%|█▉        | 77/398 [00:00<00:02, 117.65it/s]Loading weights:  23%|██▎       | 91/398 [00:01<00:02, 122.09it/s]Loading weights:  26%|██▌       | 104/398 [00:01<00:02, 115.04it/s]Loading weights:  30%|███       | 121/398 [00:01<00:02, 127.92it/s]Loading weights:  34%|███▍      | 135/398 [00:01<00:02, 128.63it/s]Loading weights:  37%|███▋      | 149/398 [00:01<00:02, 123.56it/s]Loading weights:  41%|████▏     | 165/398 [00:01<00:01, 131.46it/s]Loading weights:  45%|████▍     | 179/398 [00:01<00:01, 130.96it/s]Loading weights:  48%|████▊     | 193/398 [00:01<00:01, 124.30it/s]Loading weights:  52%|█████▏    | 208/398 [00:01<00:01, 131.23it/s]Loading weights:  56%|█████▌    | 222/398 [00:02<00:01, 133.36it/s]Loading weights:  59%|█████▉    | 236/398 [00:02<00:01, 118.91it/s]Loading weights:  63%|██████▎   | 251/398 [00:02<00:01, 126.26it/s]Loading weights:  67%|██████▋   | 267/398 [00:02<00:01, 129.63it/s]Loading weights:  71%|███████   | 281/398 [00:02<00:00, 123.54it/s]Loading weights:  75%|███████▍  | 297/398 [00:02<00:00, 130.67it/s]Loading weights:  78%|███████▊  | 311/398 [00:02<00:00, 129.63it/s]Loading weights:  82%|████████▏ | 325/398 [00:02<00:00, 124.13it/s]Loading weights:  86%|████████▌ | 341/398 [00:02<00:00, 131.69it/s]Loading weights:  89%|████████▉ | 355/398 [00:03<00:00, 131.75it/s]Loading weights:  93%|█████████▎| 369/398 [00:03<00:00, 124.44it/s]Loading weights:  97%|█████████▋| 385/398 [00:03<00:00, 130.97it/s]Loading weights: 100%|██████████| 398/398 [00:03<00:00, 116.21it/s]
+  [VRAM] after_model_load: alloc=3296MB peak=4038MB reserved=4084MB free=4104MB (total=8188MB)
+Quantization noise std: 59.799622
+D-MoLE: 14/253 layers marked critical (threshold=0.22)
+  [VRAM] cache_clear@after_dmole_probe: freed=0MB, now=3304MB
+v10 GQA detected: 32Q / 8KV = 4.0x broadcast ratio
+Injected: 9 full CASCADES + 135 FunLoRA rank-1
+  [VRAM] after_adapter_injection: alloc=3315MB peak=3530MB reserved=4094MB free=4094MB (total=8188MB)
+Sleep Consolidation Engine: ENABLED (ambient dedup=ON)
+
+============================================================
+--- Training Task 0 ---
+============================================================
+  [VRAM] after_first_backward: alloc=3481MB peak=6375MB reserved=6570MB free=1618MB (total=8188MB)
+    [Ep 1 B 50] loss=1.7679
+    [Ep 1 B 100] loss=2.3308
+
+🛌🛌🛌 SLEEP CYCLE 1 (after Task 0) 🛌🛌🛌
+  Sleep cycle complete: 0 dims pruned, 0 duplicates merged, 0 bases corrected, 0 cores rescaled
+🛌🛌🛌 SLEEP CYCLE 1 DONE 🛌🛌🛌
+
+    [Ep 1 B 150] loss=1.0000
+Task 0, Epoch 1/2, Avg Loss: 2.6260
+    [Ep 2 B 50] loss=1.3975
+    [Ep 2 B 100] loss=0.6249
+
+🛌🛌🛌 SLEEP CYCLE 2 (after Task 0) 🛌🛌🛌
+  Sleep cycle complete: 0 dims pruned, 0 duplicates merged, 0 bases corrected, 0 cores rescaled
+🛌🛌🛌 SLEEP CYCLE 2 DONE 🛌🛌🛌
+
+    [Ep 2 B 150] loss=1.7444
+Task 0, Epoch 2/2, Avg Loss: 1.4938
+
+--- Phase Transition: D-MoLE Migration ---
+E:\code.projects\CASCADES--continual-PEFT-for-Local-LLMs\cascades\injection.py:96: UserWarning: var(): degrees of freedom is <= 0. Correction should be strictly less than the reduction factor (input numel divided by output numel). (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\pytorch\aten\src\ATen\native\ReduceOps.cpp:1831.)
+  activation_stats[layer_name] += out.float().var().item()
+D-MoLE: 22/406 layers marked critical (threshold=0.22)
+  Promoted: 6, Demoted: 0
+  [VRAM] cache_clear@before_sleep: freed=0MB, now=3498MB
+
+🛌🛌🛌 SLEEP CYCLE 3 (after Task 0) 🛌🛌🛌
+  Sleep cycle complete: 0 dims pruned, 0 duplicates merged, 0 bases corrected, 0 cores rescaled
+🛌🛌🛌 SLEEP CYCLE 3 DONE 🛌🛌🛌
+
+  [VRAM] after_sleep: alloc=3498MB peak=6632MB reserved=4326MB free=3862MB (total=8188MB)
+  [VRAM] cache_clear@before_eval: freed=0MB, now=3498MB
+
+--- Evaluation after Task 0 ---
+  Task 0: 43.19% (loss: 0.8395)
+  [VRAM] cache_clear@after_eval: freed=0MB, now=3682MB
+
+============================================================
+--- Training Task 1 ---
+============================================================
+  [VRAM] after_first_backward: alloc=3682MB peak=6832MB reserved=7042MB free=1146MB (total=8188MB)
+    [Ep 1 B 50] loss=1.8856
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 8 -> 7)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 8 -> 7)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 8 -> 7)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 8 -> 7)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 8 -> 7)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 8 -> 7)
+    [Ep 1 B 100] loss=1.2844
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 7 -> 6)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 7 -> 6)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 7 -> 6)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 7 -> 6)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 7 -> 6)
+
+🛌🛌🛌 SLEEP CYCLE 4 (after Task 1) 🛌🛌🛌
+  🔧 Re-orthogonalized: drift_U=1.000000, drift_V=1.000000
+  🔧 Re-orthogonalized: drift_U=1.000000, drift_V=1.000000
+  🔧 Re-orthogonalized: drift_U=1.000000, drift_V=1.000000
+  🔧 Re-orthogonalized: drift_U=1.000000, drift_V=1.000000
+  🔧 Re-orthogonalized: drift_U=1.000000, drift_V=1.000000
+  Sleep cycle complete: 0 dims pruned, 0 duplicates merged, 5 bases corrected, 0 cores rescaled
+🛌🛌🛌 SLEEP CYCLE 4 DONE 🛌🛌🛌
+
+    [Ep 1 B 150] loss=0.5888
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 6 -> 5)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 6 -> 5)
+🫁 Breathing Manifold Triggered! Zeroing dead rank (effective 6 -> 5)
+Task 1, Epoch 1/2, Avg Loss: 1.9245
+    [Ep 2 B 50] loss=1.3880
+    [Ep 2 B 100] loss=0.3546
+
+🛌🛌🛌 SLEEP CYCLE 5 (after Task 1) 🛌🛌🛌
+  Sleep cycle complete: 0 dims pruned, 0 duplicates merged, 0 bases corrected, 0 cores rescaled
+🛌🛌🛌 SLEEP CYCLE 5 DONE 🛌🛌🛌
+
+    [Ep 2 B 150] loss=0.2819
+Task 1, Epoch 2/2, Avg Loss: 1.1635
+
+--- Phase Transition: D-MoLE Migration ---
+E:\code.projects\CASCADES--continual-PEFT-for-Local-LLMs\cascades\injection.py:96: UserWarning: var(): degrees of freedom is <= 0. Correction should be strictly less than the reduction factor (input numel divided by output numel). (Triggered internally at C:\actions-runner\_work\pytorch\pytorch\pytorch\aten\src\ATen\native\ReduceOps.cpp:1831.)
+  activation_stats[layer_name] += out.float().var().item()
+D-MoLE: 20/412 layers marked critical (threshold=0.22)
+  Promoted: 0, Demoted: 1
+  🧊 Froze subspace: 12 total protected directions across 15 adapters
+  [VRAM] cache_clear@before_sleep: freed=0MB, now=3682MB
+
+🛌🛌🛌 SLEEP CYCLE 6 (after Task 1) 🛌🛌🛌
+  Sleep cycle complete: 0 dims pruned, 0 duplicates merged, 0 bases corrected, 0 cores rescaled
+🛌🛌🛌 SLEEP CYCLE 6 DONE 🛌🛌🛌
+
+  [VRAM] after_sleep: alloc=3682MB peak=6844MB reserved=4542MB free=3646MB (total=8188MB)
+  [VRAM] cache_clear@before_eval: freed=0MB, now=3682MB
+
+--- Evaluation after Task 1 ---
+  Task 0: 39.96% (loss: 0.9173)
+  Task 1: 55.70% (loss: 0.5851)
+  [VRAM] cache_clear@after_eval: freed=0MB, now=3650MB
+
+============================================================
+--- Training Task 2 ---
+============================================================
+  [VRAM] after_first_backward: alloc=3650MB peak=6844MB reserved=6996MB free=1192MB (total=8188MB)
+    [Ep 1 B 50] loss=1.2062
+    [Ep 1 B 100] loss=0.9236
+
+🛌🛌🛌 SLEEP CYCLE 7 (after Task 2) 🛌🛌🛌
+  Sleep cycle complete: 0 dims pruned, 0 duplicates merged, 0 bases corrected, 0 cores rescaled
+🛌🛌🛌 SLEEP CYCLE 7 DONE 🛌🛌🛌
+
+    [Ep 1 B 150] loss=0.2688
+Task 2, Epoch 1/2, Avg Loss: 0.8821
+    [Ep 2 B 50] loss=0.3666
+    [Ep 2 B 100] loss=0.4315
+
+🛌🛌🛌 SLEEP CYCLE 8 (after Task 2) 🛌🛌🛌
+  Sleep cycle complete: 0 dims pruned, 0 duplicates merged, 0 bases corrected, 0 cores rescaled
+🛌🛌🛌 SLEEP CYCLE 8 DONE 🛌🛌🛌
+
+    [Ep 2 B 150] loss=0.1739
+Task 2, Epoch 2/2, Avg Loss: 0.3256
+  🧊 Froze subspace: 24 total protected directions across 14 adapters
+  [VRAM] cache_clear@before_sleep: freed=0MB, now=3650MB
+
+🛌🛌🛌 SLEEP CYCLE 9 (after Task 2) 🛌🛌🛌
+  Sleep cycle complete: 0 dims pruned, 0 duplicates merged, 0 bases corrected, 0 cores rescaled
+🛌🛌🛌 SLEEP CYCLE 9 DONE 🛌🛌🛌
+
+  [VRAM] after_sleep: alloc=3650MB peak=6844MB reserved=4696MB free=3492MB (total=8188MB)
+  [VRAM] cache_clear@before_eval: freed=0MB, now=3650MB
+
+--- Evaluation after Task 2 ---
+  Task 0: 39.37% (loss: 0.9321)
+  Task 1: 54.80% (loss: 0.6014)
+  Task 2: 76.59% (loss: 0.2667)
+  [VRAM] cache_clear@after_eval: freed=0MB, now=3640MB
+
+============================================================
+FINAL CASCADES METRICS
+============================================================
+Average Accuracy: 56.92%
+Backward Transfer: -2.36%
+Total Time: 1121.3s
+
+Accuracy Matrix:
+  After T0:  43.19% |    --   |    --  
+  After T1:  39.96% |  55.70% |    --  
+  After T2:  39.37% |  54.80% |  76.59%
+
+Results saved to E:\code.projects\CASCADES--continual-PEFT-for-Local-LLMs\experiments\cf_cycle_8\cllora_active_freeze_topk2_seed43_paired\treatment\cascades_results.csv
+
+Running per-example loss diagnostic...
+
+============================================================
+PER-EXAMPLE LOSS DIAGNOSTIC
+============================================================
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  Task 0 (task0_gsm8k_cot): 150 examples
+  Loss: mean=0.9091, std=0.2534, min=0.4652, max=1.6292
+  Loss by length: short(<100w)=0.9255 (141 ex), med(100-300w)=0.6534 (9 ex)
+
+  TOP 10 HARDEST (highest loss):
+    1. loss=1.6292 (12w) #137: John has 2 umbrellas in his house and 1 in the car.  If they cost $8 e...
+    2. loss=1.5370 (41w) #48: For his birthday, Geoffrey received clothes and money. His grandmother...
+    3. loss=1.5366 (29w) #84: Fred spent half of his allowance going to the movies. He washed the fa...
+    4. loss=1.5267 (24w) #90: Davante has twice as many friends as there are days in the week. 3 of ...
+    5. loss=1.4465 (99w) #44: Remi wants to drink more water. He has a refillable water bottle that ...
+    6. loss=1.4236 (8w) #86: Ryan builds model mustang cars.  A full size mustang is 240 inches lon...
+    7. loss=1.4010 (12w) #10: John buys cans of soup for buy 1 get one free.  He gets 30 cans with a...
+    8. loss=1.3696 (56w) #24: By the time Anne is two times as old as Emile, Emile will be six times...
+    9. loss=1.3248 (17w) #140: Martine has 6 more than twice as many peaches as Benjy. Benjy has one-...
+    10. loss=1.3050 (32w) #117: Maynard's dog dug 8 holes in the lawn.  Maynard filled in 75% of the h...
+
+  TOP 10 EASIEST (lowest loss):
+    1. loss=0.4652 (50w) #14: Jimmy bought 3 pens for school for $1 each, 4 notebooks for $3 each an...
+    2. loss=0.4786 (39w) #139: Matt has a peanut plantation that is 500 feet by 500 feet.  1 square f...
+    3. loss=0.4876 (53w) #75: A Lamplighter monkey has long arms and can swing from branch to branch...
+    4. loss=0.5077 (33w) #5: Aaron pays his actuary membership fees each year. The membership fee i...
+    5. loss=0.5163 (90w) #122: Roger's age is 5 more than twice Jill's age. In 15 years, their age di...
+    6. loss=0.5284 (59w) #69: Francis and Kiera had breakfast at a cafe. Muffins cost $2 each, and f...
+    7. loss=0.5290 (118w) #81: Carolyn wants to embroider her new jeans. She can sew 4 stitches/minut...
+    8. loss=0.5401 (70w) #0: For every 12 cans you recycle, you receive $0.50, and for every 5 kilo...
+    9. loss=0.5411 (158w) #126: Nancy's ex owes her child support. He's supposed to pay 30% of his inc...
+    10. loss=0.5466 (43w) #99: Junior has 16 rabbits. On Monday, he bought 6 toys for his rabbits. On...
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  Task 1 (task1_arc_cot): 150 examples
+  Loss: mean=0.6371, std=0.1614, min=0.3017, max=1.0565
+  Loss by length: short(<100w)=0.6897 (120 ex), med(100-300w)=0.4267 (30 ex)
+
+  TOP 10 HARDEST (highest loss):
+    1. loss=1.0565 (56w) #20: Which is not an example of animal instinct?
+  A. migrating
+  B. hibern...
+    2. loss=1.0305 (54w) #124: Which of the following has the greatest mass?
+  A. star
+  B. moon
+  C....
+    3. loss=1.0181 (58w) #15: The following are inherited traits of humans except
+  A. long hair.
+  ...
+    4. loss=0.9685 (59w) #113: Which body of water has the fewest plants and animals living in it?
+  ...
+    5. loss=0.9434 (58w) #27: What circuit does not allow an electrical current to flow through it?
+...
+    6. loss=0.9298 (56w) #68: One property of liquids is that they have a definite
+  A. flexibility
+...
+    7. loss=0.9233 (61w) #7: Which food provides the most energy for the body in the shortest amoun...
+    8. loss=0.8972 (58w) #93: The force of gravity on an object depends primarily on the object's
+  ...
+    9. loss=0.8966 (54w) #75: Which part of a pine tree makes food?
+  A. root
+  B. cone
+  C. trunk
+ ...
+    10. loss=0.8958 (56w) #78: The largest body in our solar system is
+  A. Earth.
+  B. the Sun.
+  C....
+
+  TOP 10 EASIEST (lowest loss):
+    1. loss=0.3017 (139w) #126: Which statement is the best description of what happens in the rock cy...
+    2. loss=0.3169 (73w) #47: Which of the following represents the process of photosynthesis?
+  A. ...
+    3. loss=0.3437 (173w) #139: Sheep Challenge Evolution A species of sheep lives on the Scottish isl...
+    4. loss=0.3484 (193w) #25: Sheep Challenge Evolution A species of sheep lives on the Scottish isl...
+    5. loss=0.3555 (139w) #34: In a lab investigation, students use Brand X batteries in a flashlight...
+    6. loss=0.3832 (157w) #74: The early Greeks are credited with many valid concepts in astronomy. S...
+    7. loss=0.3845 (142w) #23: Tyrone put two stones in a plastic bottle of water and shook it. After...
+    8. loss=0.3944 (109w) #143: New technology in some countries focuses on medical procedures and spa...
+    9. loss=0.3966 (103w) #99: Rhinoceroses and horses are related. They have very similar digestive ...
+    10. loss=0.3997 (131w) #9: Michael has a pencil case made of pine wood. The surface of the pencil...
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  Task 2 (task2_csqa_cot): 150 examples
+  Loss: mean=0.2724, std=0.0315, min=0.2065, max=0.4293
+  Loss by length: short(<100w)=0.2724 (150 ex)
+
+  TOP 10 HARDEST (highest loss):
+    1. loss=0.4293 (58w) #139: Why do people want to keep working?
+  A. frustration
+  B. make money
+ ...
+    2. loss=0.3963 (56w) #37: If I'm not free, what am I?
+  A. paid for
+  B. enslaved
+  C. expensive...
+    3. loss=0.3724 (57w) #7: What is the goal of most people playing games?
+  A. conquest
+  B. ente...
+    4. loss=0.3424 (54w) #64: Where do most people get carrots?
+  A. salad
+  B. store
+  C. cellar
+  ...
+    5. loss=0.3294 (56w) #126: Where might someone find a very nice flat?
+  A. city
+  B. shoes
+  C. a...
+    6. loss=0.3283 (72w) #47: John took a carboard box and emptied his closet racks into it.  He was...
+    7. loss=0.3268 (56w) #53: What office furniture stores paper files?
+  A. drawer
+  B. filing cabi...
+    8. loss=0.3267 (63w) #6: The previous hotel was bad, so what did the pleased visitor think of t...
+    9. loss=0.3264 (65w) #2: Jan wasn't very good at studying.  What might help him study better?
+ ...
+    10. loss=0.3172 (71w) #79: There are a lot of ways to relax, for this person it is simply opening...
+
+  TOP 10 EASIEST (lowest loss):
+    1. loss=0.2065 (92w) #34: Billy didn't know what to do.  He had just bought a huge ficus, but he...
+    2. loss=0.2135 (70w) #73: If I want to buy a lot of crab for dinner what sort of specialty locat...
+    3. loss=0.2202 (75w) #85: She caught the first snowflake of her life on her tongue, she was naiv...
+    4. loss=0.2212 (80w) #25: Sam spent most of his time standing up.  His job was hectic and he nev...
+    5. loss=0.2248 (72w) #116: They had just gotten their first house and needed a washer and dryer, ...
+    6. loss=0.2285 (74w) #86: You can find cards all sorts of places, but if you want to bet on them...
+    7. loss=0.2303 (65w) #59: I needed my jeans washed when my electricity was cut off, where did I ...
+    8. loss=0.2307 (68w) #105: He had just drank poison, and the man who had given it to him was now ...
+    9. loss=0.2311 (76w) #103: While in the process of heading home he realized at the last moment he...
+    10. loss=0.2312 (67w) #28: James got a stuffed animal from a UFO catcher machine.  Where might he...
+
+============================================================
+END DIAGNOSTIC
+============================================================
+
+Saving CASCADES adapter weights...
+Weights saved to E:\code.projects\CASCADES--continual-PEFT-for-Local-LLMs\experiments\cf_cycle_8\cllora_active_freeze_topk2_seed43_paired\treatment\cascades_weights.pt

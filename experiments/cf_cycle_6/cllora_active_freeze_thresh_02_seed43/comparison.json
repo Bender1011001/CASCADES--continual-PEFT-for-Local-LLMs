@@ -1,0 +1,16 @@
+{
+  "valid": true,
+  "failures": [],
+  "delta_bwt_points": -0.018122692840660815,
+  "delta_avg_acc_points": 0.03830429581168637,
+  "old_task_delta_gaps_points": [
+    0.559717469671106,
+    -0.5959628553524277
+  ],
+  "control_peak_vram_mb": 6843.90966796875,
+  "treatment_peak_vram_mb": 6843.90966796875,
+  "vram_threshold_mb": 7500.0,
+  "projection_active": true,
+  "frozen_basis_nonempty": true,
+  "continue": false
+}

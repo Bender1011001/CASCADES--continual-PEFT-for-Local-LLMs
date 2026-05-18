@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bender1011001 — Knowledge Galaxy</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { 
+    background: #000; 
+    color: #fff; 
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    overflow: hidden;
+  }
+  #graph { width: 100vw; height: 100vh; }
+  #info {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    background: rgba(0,0,0,0.85);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 12px;
+    padding: 16px 20px;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+    max-width: 320px;
+  }
+  #info h1 {
+    font-size: 18px;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, #00d4ff, #7b2ffa, #ff006e);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  #info .stat { font-size: 12px; color: #888; margin: 2px 0; }
+  #legend {
+    position: fixed;
+    bottom: 16px;
+    left: 16px;
+    background: rgba(0,0,0,0.85);
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 12px;
+    padding: 12px 16px;
+    z-index: 10;
+    backdrop-filter: blur(8px);
+  }
+  #legend h3 { font-size: 13px; margin-bottom: 6px; color: #aaa; }
+  .legend-item { 
+    display: flex; 
+    align-items: center; 
+    gap: 8px; 
+    font-size: 11px; 
+    color: #ccc;
+    margin: 3px 0;
+  }
+  .legend-dot { 
+    width: 10px; 
+    height: 10px; 
+    border-radius: 50%; 
+    display: inline-block;
+    box-shadow: 0 0 6px currentColor;
+  }
+  #hover-info {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    background: rgba(0,0,0,0.9);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 12px;
+    padding: 16px 20px;
+    z-index: 10;
+    display: none;
+    max-width: 350px;
+  }
+  #hover-info h2 { font-size: 16px; margin-bottom: 4px; }
+  #hover-info .type { font-size: 12px; color: #aaa; }
+  #hover-info .connections { font-size: 13px; color: #0af; margin-top: 4px; }
+  #loading {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 20px;
+    color: #555;
+    z-index: 100;
+  }
+  #loading .spinner {
+    display: inline-block;
+    width: 30px;
+    height: 30px;
+    border: 3px solid rgba(255,255,255,0.1);
+    border-top-color: #0af;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-right: 12px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <span class="spinner"></span>Loading 50K nodes into the galaxy...
+</div>
+
+<div id="info">
+  <h1>🌌 Knowledge Galaxy</h1>
+  <div class="stat" id="stat-nodes">Nodes: loading...</div>
+  <div class="stat" id="stat-links">Links: loading...</div>
+  <div class="stat" style="margin-top: 8px; color: #666;">
+    Drag to rotate · Scroll to zoom · Click a star
+  </div>
+</div>
+
+<div id="legend">
+  <h3>Node Types</h3>
+</div>
+
+<div id="hover-info">
+  <h2 id="hover-name"></h2>
+  <div class="type" id="hover-type"></div>
+  <div class="connections" id="hover-connections"></div>
+</div>
+
+<div id="graph"></div>
+
+<script src="https://unpkg.com/3d-force-graph@1"></script>
+<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+
+<script>
+const COLORS = {
+  'Website':        '#1a73e8',
+  'DigitalArtifact':'#34a853',
+  'Person':         '#ff006e',
+  'Concept':        '#fbbc04',
+  'Software':       '#00d4ff',
+  'Hardware':       '#ff6d00',
+  'Project':        '#7b2ffa',
+  'SearchQuery':    '#e91e63',
+  'Organization':   '#00bfa5',
+  'Location':       '#ff9100',
+  'Unknown':        '#444',
+};
+
+fetch('graph_data.json')
+  .then(r => r.json())
+  .then(data => {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('stat-nodes').textContent = `Nodes: ${data.nodes.length.toLocaleString()}`;
+    document.getElementById('stat-links').textContent = `Links: ${data.links.length.toLocaleString()}`;
+
+    // Build legend
+    const labelCounts = {};
+    data.nodes.forEach(n => {
+      labelCounts[n.label] = (labelCounts[n.label] || 0) + 1;
+    });
+    const legendEl = document.getElementById('legend');
+    Object.entries(labelCounts)
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([label, count]) => {
+        const color = COLORS[label] || '#444';
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        item.innerHTML = `<span class="legend-dot" style="background:${color};color:${color}"></span>${label} (${count.toLocaleString()})`;
+        legendEl.appendChild(item);
+      });
+
+    // Max degree for sizing
+    const maxDeg = Math.max(...data.nodes.map(n => n.degree));
+
+    const Graph = ForceGraph3D()(document.getElementById('graph'))
+      .graphData(data)
+      .backgroundColor('#000008')
+      .nodeColor(n => COLORS[n.label] || '#444')
+      .nodeVal(n => Math.max(0.5, Math.sqrt(n.degree / maxDeg) * 20))
+      .nodeOpacity(0.9)
+      .nodeLabel(n => `${n.name} (${n.label}, ${n.degree} connections)`)
+      .linkColor(() => 'rgba(255,255,255,0.03)')
+      .linkWidth(0.2)
+      .linkOpacity(0.15)
+      .d3AlphaDecay(0.02)
+      .d3VelocityDecay(0.3)
+      .warmupTicks(100)
+      .cooldownTicks(200)
+      .onNodeHover(node => {
+        const el = document.getElementById('hover-info');
+        if (node) {
+          el.style.display = 'block';
+          document.getElementById('hover-name').textContent = node.name;
+          document.getElementById('hover-name').style.color = COLORS[node.label] || '#fff';
+          document.getElementById('hover-type').textContent = node.label;
+          document.getElementById('hover-connections').textContent = `${node.degree} connections`;
+        } else {
+          el.style.display = 'none';
+        }
+      })
+      .onNodeClick(node => {
+        // Focus on clicked node
+        const distance = 200;
+        const distRatio = 1 + distance / Math.hypot(node.x, node.y, node.z);
+        Graph.cameraPosition(
+          { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
+          node,
+          1500
+        );
+      });
+
+    // Add bloom post-processing for glow effect
+    const bloomPass = new THREE.Object3D();
+
+    // After initial layout, zoom to fit
+    setTimeout(() => {
+      Graph.zoomToFit(2000, 100);
+    }, 3000);
+  })
+  .catch(err => {
+    document.getElementById('loading').textContent = 'Error: ' + err.message;
+  });
+</script>
+
+</body>
+</html>

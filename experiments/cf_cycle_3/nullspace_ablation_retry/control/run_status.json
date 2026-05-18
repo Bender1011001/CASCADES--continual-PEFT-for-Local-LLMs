@@ -1,0 +1,15 @@
+{
+  "arm": "control",
+  "status": "completed",
+  "task_suite": "reasoning3",
+  "seed": 42,
+  "rank": 4,
+  "max_length": 256,
+  "epochs": 2,
+  "vram_threshold_mb": 7500.0,
+  "allow_nonfinite": false,
+  "allow_vram_over_threshold": false,
+  "git_revision": "7c4e01d",
+  "peak_vram_mb": 6848.810546875,
+  "wall_time_s": 1295.886130809784
+}

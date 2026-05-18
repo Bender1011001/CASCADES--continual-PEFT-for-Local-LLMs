@@ -1,0 +1,61 @@
+{
+  "ear_events": [],
+  "freeze_events": [],
+  "reassign": {
+    "calls_total": 0,
+    "calls_with_null_sketch": 0,
+    "calls_with_frozen_basis": 0,
+    "max_frozen_cols": 0,
+    "removed_norm_sum": 0.0
+  },
+  "vram": [
+    {
+      "tag": "after_model_load",
+      "allocated_mb": 3296.01171875,
+      "reserved_mb": 4084.0,
+      "max_allocated_mb": 4037.5302734375
+    },
+    {
+      "tag": "after_adapter_injection",
+      "allocated_mb": 3315.51708984375,
+      "reserved_mb": 4094.0,
+      "max_allocated_mb": 3486.8486328125
+    },
+    {
+      "tag": "after_first_backward",
+      "allocated_mb": 3490.7919921875,
+      "reserved_mb": 6804.0,
+      "max_allocated_mb": 6611.81787109375
+    },
+    {
+      "tag": "after_sleep",
+      "allocated_mb": 3499.3994140625,
+      "reserved_mb": 4316.0,
+      "max_allocated_mb": 6632.1240234375
+    },
+    {
+      "tag": "after_first_backward",
+      "allocated_mb": 3632.43017578125,
+      "reserved_mb": 6888.0,
+      "max_allocated_mb": 6668.77197265625
+    },
+    {
+      "tag": "after_sleep",
+      "allocated_mb": 3638.5439453125,
+      "reserved_mb": 4560.0,
+      "max_allocated_mb": 6799.611328125
+    },
+    {
+      "tag": "after_first_backward",
+      "allocated_mb": 3684.796875,
+      "reserved_mb": 7050.0,
+      "max_allocated_mb": 6837.5302734375
+    },
+    {
+      "tag": "after_sleep",
+      "allocated_mb": 3683.796875,
+      "reserved_mb": 4548.0,
+      "max_allocated_mb": 6848.810546875
+    }
+  ]
+}

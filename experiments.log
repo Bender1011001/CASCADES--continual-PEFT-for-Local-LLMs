@@ -1,0 +1,25 @@
+# CASCADES Autoresearch Experiment Log
+
+> Format: Experiment N — timestamp, hypothesis, change, result, decision, next
+
+---
+
+## Experiment 1 — 2026-03-11 08:30
+**Hypothesis**: Current checkpoint (agent_brain.pt, rank-8, 144 adapters) retains identity recall from previous training.
+**Change**: None — baseline evaluation only.
+**Training**: N/A — using existing checkpoint from last training session.
+**Evaluation**: Identity recall test (`--test`):
+- "Who is Bender1011001?" → "a person who lives in New York... works at Cxtrix" — **FAIL** (hallucinated)
+- "Email?" → "jkensington2345+lightswitch+email@adidas.com" — **FAIL** (hallucinated)
+- "Projects?" → "angular and rxjs, no-code app" — **FAIL** (no mention of CASCADES)
+- "Hardware?" → Started "RTX 4060" then degenerated into number babble — **PARTIAL**
+- "CASCADES?" → "studies propagation dynamics of social networks" — **FAIL** (hallucinated social science definition)
+- "Interests?" → Generic non-answer — **FAIL**
+
+**Score: 0/6 correct (0%)**. The model partially recognized "RTX 4060" but everything else is hallucinated.
+
+**Decision**: BASELINE — this is the starting point to improve from.
+**Reasoning**: The 2589/2592 adapter weights loaded, so the checkpoint exists and loads. But the learned information hasn't stuck — either the training was insufficient, the rank is too low, or the data wasn't structured correctly for proper recall.
+**Next**: Re-train from scratch with the improved digital twin training data (32 voice-matched Q&A pairs) which has much more direct and specific Q&A format. Try increasing epochs to 40+ and lowering target loss to 0.5.
+
+---

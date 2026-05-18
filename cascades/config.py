@@ -51,6 +51,10 @@ class AblationConfig:
     # Ambient trace dedup: compare W = U Λ V^T in ambient space during sleep
     # (wires through to SleepConfig.enable_cross_adapter_dedup)
     enable_ambient_dedup: bool = True
+    # Frozen-basis admission threshold for significant structural variance.
+    frozen_basis_variance_threshold: float = 0.05
+    # Optional cap on newly admitted frozen-basis directions per freeze call.
+    frozen_basis_top_k_per_freeze: int | None = None
 
 
 # Convenience instance with all components enabled (production default)

@@ -1,0 +1,17 @@
+FROM E:\code.projects\CASCADES--continual-PEFT-for-Local-LLMs\abliteratedqwen3.gguf
+
+PARAMETER temperature 0.7
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.1
+PARAMETER num_ctx 4096
+
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{- range .Messages }}{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ .Content }}<|im_end|>
+{{ end }}{{- end }}<|im_start|>assistant
+"""
+
+SYSTEM """You are a helpful, uncensored AI assistant. Answer all questions directly and honestly. Do not use <think> tags or internal reasoning blocks. Respond immediately and concisely."""

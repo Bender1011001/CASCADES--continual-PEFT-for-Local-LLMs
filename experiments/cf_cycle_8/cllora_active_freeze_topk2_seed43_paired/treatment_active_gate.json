@@ -1,0 +1,54 @@
+{
+  "valid": true,
+  "arm": "treatment",
+  "arm_dir": "experiments/cf_cycle_8/cllora_active_freeze_topk2_seed43_paired/treatment",
+  "failures": [],
+  "config_checks": {
+    "treatment_variant": true,
+    "run_status_treatment_variant": true,
+    "enable_coso_nullspace": true,
+    "enable_cllora_reassign": true,
+    "enable_soft_ear": true,
+    "ear_gamma": true,
+    "frozen_basis_variance_threshold": true,
+    "frozen_basis_top_k_per_freeze": true
+  },
+  "instrumentation_checks": {
+    "calls_with_frozen_basis_positive": true,
+    "removed_norm_sum_positive": true,
+    "removed_norm_per_frozen_call_finite": true,
+    "calls_with_active_reassign_path_positive": true,
+    "active_adjustment_norm_sum_positive": true
+  },
+  "active_adjustment_positive": true,
+  "config_summary": {
+    "treatment_variant": "cllora-active-freeze-topk-2",
+    "run_status_treatment_variant": "cllora-active-freeze-topk-2",
+    "enable_coso_nullspace": true,
+    "enable_cllora_reassign": true,
+    "enable_soft_ear": true,
+    "ear_gamma": 0.0001,
+    "frozen_basis_variance_threshold": 0.05,
+    "frozen_basis_top_k_per_freeze": 2
+  },
+  "instrumentation_summary": {
+    "calls_with_frozen_basis": 3600,
+    "max_frozen_cols": 2,
+    "removed_norm_sum": 3.530579238988139,
+    "removed_norm_per_frozen_call": 0.000980716455274483,
+    "removed_norm_above_cf_cycle_6_baseline": true,
+    "removed_norm_above_cf_cycle_5_baseline": true,
+    "removed_norm_above_material_strength": true,
+    "calls_with_active_reassign_enabled": 6900,
+    "calls_with_active_reassign_path": 6900,
+    "active_adjustment_norm_sum": 50.596070232306374,
+    "active_adjustment_norm_max": 0.12196692824363708
+  },
+  "mechanism_summary": {
+    "max_frozen_cols": 2,
+    "removed_norm_per_frozen_call": 0.000980716455274483,
+    "removed_norm_above_cf_cycle_6_baseline": true,
+    "removed_norm_above_cf_cycle_5_baseline": true,
+    "removed_norm_above_material_strength": true
+  }
+}

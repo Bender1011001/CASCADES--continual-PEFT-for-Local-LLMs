@@ -1,4 +1,15 @@
+---
+project: cascades
+status: working
+updated: 2026-03-14
+---
+
 # cascades/ — CASCADES library module
+
+## Resume
+- **Pick up at**: [Review and update]
+- **Last session**: [Auto-migrated to CONTEXT v2]
+- **Blocked on**: Nothing
 
 ## Status
 

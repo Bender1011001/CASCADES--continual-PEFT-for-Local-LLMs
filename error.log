@@ -1,0 +1,13 @@
+INFO:numexpr.utils:Note: NumExpr detected 20 cores but "NUMEXPR_MAX_THREADS" not set, so enforcing safe limit of 16.
+INFO:numexpr.utils:NumExpr defaulting to 16 threads.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "E:\code.projects\CASCADES--continual-PEFT-for-Local-LLMs\app\server.py", line 350, in <module>
+    main()
+    ~~~~^^
+  File "E:\code.projects\CASCADES--continual-PEFT-for-Local-LLMs\app\server.py", line 322, in main
+    from app.model_loader import CASCADESModel
+  File "E:\code.projects\CASCADES--continual-PEFT-for-Local-LLMs\app\model_loader.py", line 23, in <module>
+    from cascades.injection import inject_cascades_adapters
+ImportError: cannot import name 'inject_cascades_adapters' from 'cascades.injection' (E:\code.projects\CASCADES--continual-PEFT-for-Local-LLMs\cascades\injection.py)

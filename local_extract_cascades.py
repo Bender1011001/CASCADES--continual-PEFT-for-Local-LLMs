@@ -20,13 +20,13 @@ import time
 import requests
 
 # --- Configuration ---
-CHUNKS_DIR = r"D:\digital-twin\takeout_chunks_32k"
+CHUNKS_DIR = r"E:\digital-twin\takeout_chunks"
 CYPHER_DIR = r"D:\digital-twin\cypher_output"
 CASCADES_URL = "http://127.0.0.1:8000"
 
 # CASCADES server handles 32k context, so we don't need heavy sub-chunking
-# But we keep it to be safe on VRAM
-MAX_SUBCHUNK_CHARS = 20000
+# We set this to 12000 (~3000 tokens) to leave plenty of room in 8192 context window
+MAX_SUBCHUNK_CHARS = 12000
 GENERATION_TIMEOUT = 1200  # 20 minutes per sub-chunk (quantized models can be slower)
 
 EXTRACTION_PROMPT = """You are a knowledge graph extraction engine. Read the following data and extract ALL meaningful entities and relationships as Neo4j Cypher MERGE statements.
@@ -171,14 +171,19 @@ def extract_cypher(text):
     """
     prompt = EXTRACTION_PROMPT.format(chunk_content=text)
     
+    import uuid
+    # Create a unique conversation_id for this chunk so the server runs the Self-Synthesizer
+    chunk_conv_id = str(uuid.uuid4())
+    
     payload = {
         "model": "cascades",
         "messages": [
             {"role": "user", "content": prompt}
         ],
         "stream": False,
-        "max_tokens": 4096,
+        "max_tokens": 1536,  # 1536 tokens is plenty for cypher output
         "temperature": 0.1,
+        "conversation_id": chunk_conv_id
     }
     
     try:
