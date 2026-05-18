@@ -10,6 +10,123 @@ import torch
 import torch.nn.functional as F
 
 
+SBA_FORMULA_VARIANT = "sba-v1-valid-position-sinh-cosh-shared-denominator"
+
+
+def _sba_valid_mask(logits: torch.Tensor, valid_mask: torch.Tensor | None = None) -> torch.Tensor:
+    """Return a Boolean mask broadcastable to logits, where True means key is valid."""
+    if valid_mask is None:
+        return torch.ones_like(logits, dtype=torch.bool)
+    mask = valid_mask.to(device=logits.device)
+    if mask.dtype != torch.bool:
+        mask = mask != 0
+    while mask.dim() < logits.dim():
+        mask = mask.unsqueeze(-2)
+    return torch.broadcast_to(mask, logits.shape)
+
+
+def sba_reference_attention(
+    logits: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Readable valid-position sinh-cosh normalized signed attention."""
+    valid = _sba_valid_mask(logits, valid_mask)
+    zeros = torch.zeros_like(logits)
+    safe_logits = torch.where(valid, logits, zeros)
+    numerator = torch.where(valid, torch.sinh(safe_logits), zeros)
+    denominator = torch.where(valid, torch.cosh(safe_logits), zeros).sum(dim=-1, keepdim=True)
+    has_valid = valid.any(dim=-1, keepdim=True)
+    safe_denominator = denominator.clamp_min(torch.finfo(logits.dtype).tiny)
+    weights = torch.where(has_valid, numerator / safe_denominator, zeros)
+    return torch.where(valid, weights, zeros)
+
+
+def sba_optimized_attention(
+    logits: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Stable positive/negative evidence-channel implementation of SBA v1."""
+    valid = _sba_valid_mask(logits, valid_mask)
+    zeros = torch.zeros_like(logits)
+    dtype_floor = torch.finfo(logits.dtype).min
+    floor = torch.full_like(logits, dtype_floor)
+    pos_logits = torch.where(valid, logits, floor)
+    neg_logits = torch.where(valid, -logits, floor)
+    max_pos = pos_logits.max(dim=-1, keepdim=True).values
+    max_neg = neg_logits.max(dim=-1, keepdim=True).values
+    has_valid = valid.any(dim=-1, keepdim=True)
+    row_max = torch.maximum(max_pos, max_neg)
+    row_max = torch.where(has_valid, row_max, torch.zeros_like(row_max))
+    e_pos = torch.where(valid, torch.exp(pos_logits - row_max), zeros)
+    e_neg = torch.where(valid, torch.exp(neg_logits - row_max), zeros)
+    denominator = (e_pos + e_neg).sum(dim=-1, keepdim=True)
+    safe_denominator = denominator.clamp_min(torch.finfo(logits.dtype).tiny)
+    weights = torch.where(has_valid, (e_pos - e_neg) / safe_denominator, zeros)
+    return torch.where(valid, weights, zeros)
+
+
+def sba_value_attention(
+    logits: torch.Tensor,
+    values: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return SBA attention weights and the corresponding value aggregation."""
+    weights = sba_optimized_attention(logits, valid_mask)
+    attended = torch.matmul(weights, values)
+    return weights, attended
+
+
+def sba_attention_diagnostics(
+    weights: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+) -> dict[str, object]:
+    """Compute finite, signed-sum, signed-L1, and masked-leakage diagnostics."""
+    valid = _sba_valid_mask(weights, valid_mask)
+    masked_weights = torch.where(valid, torch.zeros_like(weights), weights)
+    row_signed_sum = weights.sum(dim=-1)
+    row_abs_sum = weights.abs().sum(dim=-1)
+    return {
+        "finite": bool(torch.isfinite(weights).all().item()),
+        "row_signed_sum": row_signed_sum.detach(),
+        "row_abs_sum": row_abs_sum.detach(),
+        "max_signed_l1": float(row_abs_sum.max().item()) if row_abs_sum.numel() else 0.0,
+        "max_masked_leakage": float(masked_weights.abs().max().item()) if masked_weights.numel() else 0.0,
+    }
+
+
+def sba_jacobian_frobenius_norm(
+    logits: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+) -> float:
+    """Measure the Frobenius norm of the SBA attention Jacobian for small CPU tensors."""
+    base = logits.detach().clone().requires_grad_(True)
+
+    def fn(flat_logits: torch.Tensor) -> torch.Tensor:
+        reshaped = flat_logits.reshape_as(base)
+        return sba_optimized_attention(reshaped, valid_mask).reshape(-1)
+
+    jacobian = torch.autograd.functional.jacobian(fn, base.reshape(-1), create_graph=False)
+    return float(torch.linalg.matrix_norm(jacobian).item())
+
+
+def softmax_jacobian_frobenius_norm(
+    logits: torch.Tensor,
+    valid_mask: torch.Tensor | None = None,
+) -> float:
+    """Measure a masked-softmax Jacobian norm for comparison with SBA diagnostics."""
+    base = logits.detach().clone().requires_grad_(True)
+    valid = _sba_valid_mask(base, valid_mask)
+    floor = torch.full_like(base, torch.finfo(base.dtype).min)
+
+    def fn(flat_logits: torch.Tensor) -> torch.Tensor:
+        reshaped = flat_logits.reshape_as(base)
+        masked = torch.where(valid, reshaped, floor)
+        return torch.softmax(masked, dim=-1).reshape(-1)
+
+    jacobian = torch.autograd.functional.jacobian(fn, base.reshape(-1), create_graph=False)
+    return float(torch.linalg.matrix_norm(jacobian).item())
+
+
 # ---------------------------------------------------------------------------
 # v10: GQA-Aware Metric Preconditioning (§7 — resolves 8B GQA Paradox)
 # ---------------------------------------------------------------------------
