@@ -20,6 +20,8 @@ def _sba_valid_mask(logits: torch.Tensor, valid_mask: torch.Tensor | None = None
     usual trailing-dimension broadcasting, accept common attention mask forms
     that need singleton dimensions inserted after the batch axis, such as
     ``(B, Q, K)`` and ``(B, K)`` for logits shaped ``(B, H, Q, K)``.
+    Ambiguous two-dimensional masks are rejected when they could mean either
+    query/key or batch/key validity.
     """
     if valid_mask is None:
         return torch.ones_like(logits, dtype=torch.bool)
@@ -42,8 +44,23 @@ def _sba_valid_mask(logits: torch.Tensor, valid_mask: torch.Tensor | None = None
         if mask.dim() == 1 and mask_shape == (key_dim,):
             return _broadcast_with_shape((1,) * (logits.dim() - 1) + mask_shape)
 
+        is_query_key_mask = mask.dim() == 2 and logits.dim() >= 2 and mask_shape == target_shape[-2:]
+        is_batch_key_mask = (
+            mask.dim() == 2
+            and logits.dim() >= 3
+            and mask_shape[0] == target_shape[0]
+            and mask_shape[1:] == target_shape[-1:]
+        )
+
+        if is_query_key_mask and is_batch_key_mask:
+            raise ValueError(
+                f"ambiguous valid_mask shape {mask_shape} for logits shape {target_shape}: "
+                "2D masks can be interpreted as either (Q, K) or (B, K); "
+                "pass explicit singleton dimensions or a full-rank mask"
+            )
+
         # Query/key mask: (Q, K) -> (..., Q, K).
-        if mask.dim() == 2 and logits.dim() >= 2 and mask_shape == target_shape[-2:]:
+        if is_query_key_mask:
             return _broadcast_with_shape((1,) * (logits.dim() - 2) + mask_shape)
 
         # Batch-aware masks: (B, K) or (B, Q, K) -> (B, 1, ..., K/QK).

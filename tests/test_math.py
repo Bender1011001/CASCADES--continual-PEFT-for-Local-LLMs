@@ -331,6 +331,18 @@ class TestSymmetricBipolarAttention:
         assert torch.allclose(batch_key_weights, expanded_batch_key_weights, atol=0.0, rtol=0.0)
         assert torch.all(batch_key_weights.masked_select(~expanded_batch_key_mask) == 0.0)
 
+    def test_ambiguous_2d_mask_with_equal_batch_and_query_is_rejected(self):
+        logits = torch.randn(2, 3, 2, 5, dtype=torch.float64)
+        valid_mask = torch.tensor(
+            [
+                [True, False, True, True, False],
+                [False, True, True, False, True],
+            ]
+        )
+
+        with pytest.raises(ValueError, match=r"ambiguous.*\(Q, K\).*\(B, K\)"):
+            sba_optimized_attention(logits, valid_mask)
+
     def test_safe_masking_and_all_masked_rows(self):
         logits = torch.tensor([[[50.0, -50.0, 0.0], [1.0, 2.0, 3.0]]], dtype=torch.float64)
         valid_mask = torch.tensor([[[True, False, True], [False, False, False]]])
