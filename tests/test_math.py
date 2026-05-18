@@ -27,6 +27,13 @@ from cascades.math_ops import (
     energy_accounted_reassignment,
     deal_heat_kernel_filter,
     svc_calibration,
+    SBA_FORMULA_VARIANT,
+    sba_reference_attention,
+    sba_optimized_attention,
+    sba_value_attention,
+    sba_attention_diagnostics,
+    sba_jacobian_frobenius_norm,
+    softmax_jacobian_frobenius_norm,
 )
 
 
@@ -227,3 +234,68 @@ class TestFunLoRAEffectiveRank:
         ab = X @ b.T @ a.T
         rank = self._numerical_rank(ab, tol=1e-3)
         assert rank == 1, f"Rank-1 product has rank={rank} (expected 1)"
+
+
+# ---------------------------------------------------------------------------
+# Symmetric Bipolar Attention v1 validation invariants
+# ---------------------------------------------------------------------------
+
+class TestSymmetricBipolarAttention:
+    def test_formula_variant_is_pinned(self):
+        assert SBA_FORMULA_VARIANT == "sba-v1-valid-position-sinh-cosh-shared-denominator"
+
+    def test_reference_formula_hand_checked_values(self):
+        logits = torch.tensor([[[0.0, math.log(2.0), -math.log(2.0)]]], dtype=torch.float64)
+        weights = sba_reference_attention(logits)
+        expected = torch.tensor([[[0.0, 0.21428571428571427, -0.21428571428571427]]], dtype=torch.float64)
+        assert torch.allclose(weights, expected, atol=1e-12, rtol=0.0)
+
+    def test_optimized_matches_reference_over_shapes_and_masks(self):
+        generator = torch.Generator().manual_seed(20260518)
+        shapes = [(2, 3), (2, 4, 5), (2, 2, 3, 7)]
+        for shape in shapes:
+            logits = torch.randn(*shape, generator=generator, dtype=torch.float64) * 3.0
+            valid_mask = torch.rand(*shape, generator=generator) > 0.25
+            valid_mask[..., 0] = True
+            reference = sba_reference_attention(logits, valid_mask)
+            optimized = sba_optimized_attention(logits, valid_mask)
+            assert torch.allclose(optimized, reference, atol=1e-10, rtol=1e-10)
+
+    def test_safe_masking_and_all_masked_rows(self):
+        logits = torch.tensor([[[50.0, -50.0, 0.0], [1.0, 2.0, 3.0]]], dtype=torch.float64)
+        valid_mask = torch.tensor([[[True, False, True], [False, False, False]]])
+        values = torch.tensor([[[1.0, 0.0], [1000.0, 1000.0], [0.0, 1.0]]], dtype=torch.float64)
+        weights, attended = sba_value_attention(logits, values, valid_mask)
+        assert weights[0, 0, 1].item() == 0.0
+        assert torch.all(weights[0, 1] == 0.0)
+        assert torch.all(attended[0, 1] == 0.0)
+        assert torch.isfinite(weights).all().item()
+        assert torch.isfinite(attended).all().item()
+        assert abs(attended[0, 0, 1].item()) <= 1.0
+
+    def test_signed_l1_bound_and_finite_gradients(self):
+        logits = torch.tensor(
+            [[[15.0, -12.0, 0.5, -0.25], [0.0, 0.0, 0.0, 0.0]]],
+            dtype=torch.float64,
+            requires_grad=True,
+        )
+        valid_mask = torch.tensor([[[True, True, True, False], [True, True, True, True]]])
+        weights = sba_optimized_attention(logits, valid_mask)
+        diagnostics = sba_attention_diagnostics(weights, valid_mask)
+        assert diagnostics["finite"] is True
+        assert diagnostics["max_masked_leakage"] == 0.0
+        assert diagnostics["max_signed_l1"] <= 1.0 + 1e-12
+        loss = (weights.square().sum() + weights.sum())
+        loss.backward()
+        assert logits.grad is not None
+        assert torch.isfinite(logits.grad).all().item()
+
+    def test_jacobian_claim_is_measured_not_assumed(self):
+        logits = torch.tensor([[0.25, -0.75, 1.25]], dtype=torch.float64)
+        valid_mask = torch.tensor([[True, True, True]])
+        sba_norm = sba_jacobian_frobenius_norm(logits, valid_mask)
+        softmax_norm = softmax_jacobian_frobenius_norm(logits, valid_mask)
+        assert math.isfinite(sba_norm)
+        assert math.isfinite(softmax_norm)
+        assert sba_norm >= 0.0
+        assert softmax_norm >= 0.0
